@@ -176,7 +176,7 @@ export class NativeCacheKeepalive {
       if (!this.#persist(row)) return
       const request: GenerateOptions = { ...structuredClone(row.input), maxTokens: 1, signal: row.controller.signal,
         messages: [...structuredClone(row.input.messages), createUserMessage({ content: [{ type: 'text', text: KEEPALIVE_PROMPT }],
-          source: { kind: 'plugin:dsh-model-fusion' } })] }
+          source: { kind: 'plugin:dsh-fusion-board' } })] }
       this.auxiliary.tag(request, { purpose: 'cache-keepalive', taskId: row.record.taskId, sessionId: row.agent.id,
         profileDigest: row.owner.binding.profile.digest, role: row.owner.role, seriesId: row.record.id, iteration: row.record.attempts })
       let success = false

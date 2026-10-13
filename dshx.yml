@@ -1,11 +1,11 @@
-id: dsh-model-fusion
-entry: src/dsh-model-fusion.ts
-marker: "[my-plugins/dsh-model-fusion] loaded"
+id: dsh-fusion-board
+entry: src/dsh-fusion-board.ts
+marker: "[my-plugins/dsh-fusion-board] loaded"
 kind: client
 profile: web
 hotReload:
   artifacts:
-    - src/dsh-model-fusion.ts
+    - src/dsh-fusion-board.ts
     - src/host/coordinator.ts
     - src/host/settings.ts
     - src/host/status.ts
@@ -22,7 +22,7 @@ hotReload:
     - src/task/state.ts
     - src/context/guard.ts
     - src/task/sqlite-store.ts
-    - lib/dsh-model-fusion.js
+    - lib/dsh-fusion-board.js
     - src/host/history.ts
     - src/host/native-model-control.ts
     - src/host/native-workflow.ts

@@ -1,7 +1,7 @@
 import type { Context } from '@deepseek-ai/cordis';
 import z from '@deepseek-ai/schemastery';
 export * from './index.js';
-export declare const name = "dsh-model-fusion";
+export declare const name = "dsh-fusion-board";
 export declare const inject: string[];
 export interface Config {
     profilePath?: string;

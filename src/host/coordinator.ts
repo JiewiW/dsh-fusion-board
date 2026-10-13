@@ -50,6 +50,7 @@ import { CachePolicy } from './cache-policy.js'
 import type { ChangeBase } from './change-evidence.js'
 import { evidencePage } from './evidence-page.js'
 import { readNativeEvidence } from './native-evidence.js'
+import { DECOMPOSITION_PLACEHOLDER, DECOMPOSITION_SETTING_ID, isTaskDecompositionEnabled } from './settings.js'
 
 const textOutput = { schema: { type: 'string' as const }, render: (_args: unknown, text: string) => [{ type: 'text' as const, text }] }
 const stringList = { type: 'array' as const, items: { type: 'string' as const }, required: true as const }
@@ -1039,6 +1040,11 @@ export class FusionCoordinator {
   }
 
   async delegate(agent: Agent, args: DelegateInput, exec: ToolRunContext, mode: 'explore' | 'implement' | 'text' = 'implement'): Promise<string> {
+    // M2 placeholder gate (taskDecompositionMode). ON returns a fixed tool
+    // result before any state is touched: no Sidekick dispatch, no task card,
+    // no review. OFF (default; missing/non-true document) falls through to the
+    // unchanged upstream delegation logic below.
+    if (isTaskDecompositionEnabled(this.store.readDocument(DECOMPOSITION_SETTING_ID))) return DECOMPOSITION_PLACEHOLDER
     const binding = this.#binding(agent, 'lead')
     const priorState = this.state(binding.taskId)
     const held = this.#held.get(binding.taskId)

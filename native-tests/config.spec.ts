@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { Config } from '../src/dsh-model-fusion.js'
+import { Config } from '../src/dsh-fusion-board.js'
 import { nativeShellTool } from '../src/host/shell.js'
 
 describe('actual plugin configuration normalization', () => {

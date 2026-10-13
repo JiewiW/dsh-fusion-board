@@ -17,7 +17,7 @@ export function canonicalWorkspace(cwd: string): string {
   return fs.realpathSync.native(cwd)
 }
 
-const DURABLE_LEASE_ROOT = path.join(os.homedir(), '.local', 'state', 'dsh-model-fusion', 'leases')
+const DURABLE_LEASE_ROOT = path.join(os.homedir(), '.local', 'state', 'dsh-fusion-board', 'leases')
 
 export function leasePath(workspaceId: string, root = DURABLE_LEASE_ROOT): string {
   const key = createHash('sha256').update(workspaceId).digest('hex').slice(0, 24)
@@ -108,7 +108,7 @@ export class WorkspaceWriteLease {
   #transaction<T>(workspaceId: string, body: (db: DatabaseSync) => T): T {
     const legacy = leasePath(workspaceId, this.root)
     fs.mkdirSync(path.dirname(legacy), { recursive: true, mode: 0o700 })
-    const oldTemporary = leasePath(workspaceId, path.join(fs.existsSync('/tmp') ? '/tmp' : os.tmpdir(), 'dsh-model-fusion-leases'))
+    const oldTemporary = leasePath(workspaceId, path.join(fs.existsSync('/tmp') ? '/tmp' : os.tmpdir(), 'dsh-fusion-board-leases'))
     for (const lock of new Set([legacy, oldTemporary])) {
       try {
         fs.lstatSync(lock)

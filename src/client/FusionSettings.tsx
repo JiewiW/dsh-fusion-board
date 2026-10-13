@@ -13,6 +13,8 @@ interface SettingsState {
   authorized: boolean
   managedAuthorization?: boolean
   reason?: string
+  taskDecompositionMode: boolean
+  decompositionRevision: number
 }
 const styles = `
 .fusion-settings{max-width:680px;color:var(--dsw-alias-label-primary);display:flex;flex-direction:column;gap:18px}
@@ -34,6 +36,8 @@ const styles = `
 .fusion-settings .fusion-limits{display:flex;flex-direction:column;gap:12px;padding-top:14px}
 .fusion-settings input[type=number]{min-width:0;width:100%;box-sizing:border-box;background:var(--dsw-alias-bg-page-primary);border:1px solid var(--dsw-alias-border-l2);border-radius:7px;padding:8px;color:inherit;font:inherit}
 .fusion-settings .fusion-consent{display:flex;align-items:flex-start;gap:8px;font-size:12px;line-height:18px}
+.fusion-board-decomp{display:grid;grid-template-columns:auto minmax(0,1fr);align-items:start;gap:10px;font-size:13px;line-height:20px}
+.fusion-board-decomp input[type=checkbox]{margin-top:2px;width:16px;height:16px;flex:none}
 .fusion-cache{display:flex;flex-direction:column;gap:12px;border-top:1px solid var(--dsw-alias-border-l2);padding-top:20px}.fusion-cache h3{margin:0}.fusion-cache-model{display:flex;flex-direction:column;gap:8px;padding:14px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px}.fusion-cache-model small{display:block;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}.fusion-cache-controls{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr) auto;gap:10px;align-items:end}.fusion-cache-controls label{grid-template-columns:1fr;gap:4px}.fusion-cache a{color:var(--dsw-alias-brand-primary)}
 @media(max-width:560px){.fusion-cache-controls{grid-template-columns:1fr}}
 .fusion-history{display:flex;flex-direction:column;gap:12px;border-top:1px solid var(--dsw-alias-border-l2);padding-top:20px}.fusion-history table{width:100%;border-collapse:collapse;font-size:12px;text-align:left}.fusion-history :is(th,td){padding:8px;border-bottom:1px solid var(--dsw-alias-border-l2);font-weight:400;vertical-align:top}.fusion-history caption{text-align:left;font-size:13px;margin-bottom:8px}.fusion-history small{display:block;color:var(--dsw-alias-label-secondary);overflow-wrap:anywhere}.fusion-history ol{padding-left:20px;margin:0}.fusion-history li{padding:10px 0}.fusion-history h3{margin:8px 0 0}.fusion-history p{overflow-wrap:anywhere}
@@ -78,6 +82,7 @@ export function FusionSettings() {
   const [error, setError] = useState<string>()
   const [notice, setNotice] = useState<string>()
   const [saving, setSaving] = useState(false)
+  const [savingDecomposition, setSavingDecomposition] = useState(false)
   const chooseModel = (role: 'lead' | 'worker', route: PhysicalRoute) => setDraft(value => ({ ...value, [role]: route,
     ...(value.cacheKeepalive ? { cacheKeepalive: { ...value.cacheKeepalive, [role]: role === 'lead' ? 'auto' : false } } : {}) }))
   useEffect(() => {
@@ -104,13 +109,32 @@ export function FusionSettings() {
       const confirmed = await current.json() as SettingsState
       setState(confirmed); setDraft(confirmed.pair ?? {})
       settingsChanged()
-      setNotice(tr(lang, '组合已保存并启用。可以在模型菜单中选择 Fusion · 自动。', 'Pair saved and enabled. Choose Fusion · auto in the model menu.'))
+      setNotice(tr(lang, '组合已保存并启用。可以在模型菜单中选择 Fusion Board · 自动。', 'Pair saved and enabled. Choose Fusion Board · auto in the model menu.'))
     } catch (error) { setError(error instanceof Error ? error.message : String(error)) }
     finally { setSaving(false) }
   }
+  // M2 task-decomposition switch: persisted under its own SQLite document key
+  // ('settings:decomposition'), independent of the model pair. ON only flips the
+  // placeholder gate; the host never delegates while it is on.
+  const toggleDecomposition = async (enabled: boolean) => {
+    if (!state || savingDecomposition) return
+    setSavingDecomposition(true); setError(undefined)
+    try {
+      const response = await fetch('/api/model-fusion', { method: 'POST', credentials: 'same-origin',
+        headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'decomposition-setting', revision: state.decompositionRevision, enabled }) })
+      const result = await response.json() as { revision?: number; error?: string }
+      if (!response.ok) throw new Error(result.error ?? tr(lang, '保存失败，请刷新后重试', 'Save failed; refresh and try again'))
+      const current = await fetch('/api/model-fusion?view=settings', { credentials: 'same-origin', cache: 'no-store' })
+      if (!current.ok) throw new Error(tr(lang, '设置已提交，但暂时无法确认，请刷新', 'Saved, but not confirmed yet; refresh'))
+      const confirmed = await current.json() as SettingsState
+      setState(confirmed); setDraft(confirmed.pair ?? {})
+      settingsChanged()
+    } catch (error) { setError(error instanceof Error ? error.message : String(error)) }
+    finally { setSavingDecomposition(false) }
+  }
   return <div className="fusion-settings">
     <style>{styles}</style>
-    <header><h2>Fusion</h2><p>{tr(lang, '选择 Lead 和 Sidekick。Lead 处理日常请求、安排工作并审查结果；Sidekick 执行委派的任务。', 'Choose a Lead and a Sidekick. The Lead handles requests, plans and reviews; the Sidekick does the delegated work.')}</p>
+    <header><h2>Fusion Board</h2><p>{tr(lang, '选择 Lead 和 Sidekick。Lead 处理日常请求、安排工作并审查结果；Sidekick 执行委派的任务。', 'Choose a Lead and a Sidekick. The Lead handles requests, plans and reviews; the Sidekick does the delegated work.')}</p>
       <p><b>{tr(lang, '搭配建议', 'Pairing tip')}</b>: {tr(lang, 'Fusion 省钱靠的是 Sidekick 比 Lead 便宜得多。选一个强的前沿模型当 Lead，再选一个价格低很多（最好 5 倍以上）的模型当 Sidekick；两者价格越接近，越省不了钱。',
         'Fusion saves money because the Sidekick is much cheaper than the Lead. Pick a strong frontier Lead and a Sidekick that costs far less (ideally 5× or more); the closer their prices, the smaller the saving.')}</p></header>
     {error && <p role="alert">{error}</p>}
@@ -137,6 +161,15 @@ export function FusionSettings() {
         <button disabled={saving || !draft.lead || !draft.worker || JSON.stringify(draft) === JSON.stringify(state.pair)} onClick={() => { void save() }}>{saving ? tr(lang, '正在保存…', 'Saving…') : tr(lang, '保存组合', 'Save pair')}</button>
       </div>
       {notice && <p role="status">{notice}</p>}
+      <fieldset className="fusion-card" disabled={savingDecomposition}>
+        <legend>{tr(lang, '任务分解模式（建设中）', 'Task decomposition mode (under construction)')}</legend>
+        <label className="fusion-board-decomp"><input type="checkbox" checked={state.taskDecompositionMode} disabled={savingDecomposition}
+          aria-label={tr(lang, '启用任务分解模式', 'Enable task decomposition mode')}
+          onChange={event => { void toggleDecomposition(event.target.checked) }} />
+          <span>{tr(lang, '启用任务分解模式', 'Enable task decomposition mode')}{savingDecomposition ? tr(lang, '（正在保存…）', ' (saving…)') : ''}</span></label>
+        <p>{tr(lang, '开启后 Lead 不再向 Sidekick 委派任务，fusion_delegate 直接返回「任务分解模式建设中」：不派活、不建卡、不触发审查。此为 M2 占位桩；关闭（默认）时，委派流程与上游版本完全一致。',
+          'When on, the Lead no longer delegates to a Sidekick; fusion_delegate returns “Task decomposition mode is under construction”: no dispatch, no task card, no review. This is an M2 placeholder; when off (default), delegation is identical to the upstream release.')}</p>
+      </fieldset>
       <p>{tr(lang, '输出参数跟随原生模型设置，Fusion 不额外限制请求次数或任务轮数。', 'Output settings follow the native model settings; Fusion adds no request or round limits.')}</p>
       <p>{tr(lang, '保存即表示允许 Fusion 使用所选模型的现有账号；费用由这些账号计入，当前未提供可靠的实际账单金额。', 'Saving lets Fusion use the chosen models\' existing accounts; they are billed there, and no reliable billed amount is available here.')}</p>
       {state.pair && !state.authorized && <p role="status">{tr(lang, '组合需要重新保存后才能使用', 'Save the pair again before use')}{state.reason ? `: ${state.reason}` : ''}</p>}

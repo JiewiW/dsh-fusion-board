@@ -62,7 +62,7 @@ export function assertWorkerBriefRequest(store: SqliteFusionStore, taskId: TaskI
   if (!isAgentLoopRequest(request) || request.purpose !== undefined) return
   const expected = workerHandoffProjection(store, taskId)
   if (!expected.totalRecords) return
-  const present = request.messages.some(message => message.source?.kind === 'plugin:dsh-model-fusion' && message.source.form === 'snapshot'
+  const present = request.messages.some(message => message.source?.kind === 'plugin:dsh-fusion-board' && message.source.form === 'snapshot'
     && message.source.sections.some(section => {
       if (section.name !== 'fusion:task') return false
       try {

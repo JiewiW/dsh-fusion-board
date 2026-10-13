@@ -10,7 +10,7 @@ export interface FusionHintProps { sessionId: string; directory: ObservableSnaps
 /** Additive composer hint. The original selector and its selection state stay native. */
 export function FusionHint({ sessionId, directory, load }: FusionHintProps) {
   const selected = useSyncExternalStore(directory.subscribe, directory.getSnapshot).current
-  const fusion = selected?.provider === 'dsh-model-fusion' && selected.model === 'auto'
+  const fusion = selected?.provider === 'dsh-fusion-board' && selected.model === 'auto'
   const lang = useLang()
   const [message, setMessage] = useState<string>()
   useEffect(() => { load() }, [load])
@@ -21,9 +21,9 @@ export function FusionHint({ sessionId, directory, load }: FusionHintProps) {
     const refresh = () => {
       void fetch('/api/model-fusion?view=settings', { credentials: 'same-origin', cache: 'no-store', signal: abort.signal })
         .then(async response => { if (!response.ok) throw new Error('unavailable'); return response.json() as Promise<{ pair: unknown; authorized: boolean }> })
-        .then(state => { if (active) setMessage(!state.pair ? tr(lang, 'Fusion 尚未配置模型，请前往设置 → Fusion 选择 Lead 和 Sidekick。', 'Fusion has no models yet: open Settings → Fusion and choose a Lead and a Sidekick.')
-          : !state.authorized ? tr(lang, 'Fusion 当前配置未就绪，请前往设置 → Fusion 查看。', 'The Fusion setup is not ready: see Settings → Fusion.') : undefined) })
-        .catch(() => { if (active) setMessage(tr(lang, '暂时无法确认 Fusion 配置，请前往设置 → Fusion 查看。', 'Cannot confirm the Fusion setup right now: see Settings → Fusion.')) })
+        .then(state => { if (active) setMessage(!state.pair ? tr(lang, 'Fusion 尚未配置模型，请前往设置 → Fusion Board 选择 Lead 和 Sidekick。', 'Fusion has no models yet: open Settings → Fusion Board and choose a Lead and a Sidekick.')
+          : !state.authorized ? tr(lang, 'Fusion 当前配置未就绪，请前往设置 → Fusion Board 查看。', 'The Fusion setup is not ready: see Settings → Fusion Board.') : undefined) })
+        .catch(() => { if (active) setMessage(tr(lang, '暂时无法确认 Fusion 配置，请前往设置 → Fusion Board 查看。', 'Cannot confirm the Fusion setup right now: see Settings → Fusion Board.')) })
     }
     refresh()
     const off = onSettingsChanged(refresh)

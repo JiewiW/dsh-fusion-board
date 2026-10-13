@@ -23,6 +23,22 @@ export interface SettingsCatalog {
         }[];
     }[];
 }
+/**
+ * Task-decomposition mode (M2 placeholder switch).
+ *
+ * Stored under its own Host document key, intentionally decoupled from the
+ * model-pair document 'settings:profile' so the experimental toggle can ship
+ * and persist without touching Lead/Worker configuration. Absent document or
+ * any non-true value means OFF, which must reproduce upstream behaviour
+ * exactly. ON currently only short-circuits delegation with a placeholder.
+ */
+export declare const DECOMPOSITION_SETTING_ID = "settings:decomposition";
+/** Tool result returned to the Lead when decomposition mode is ON; no Sidekick is dispatched. */
+export declare const DECOMPOSITION_PLACEHOLDER: string;
+/** Reads the boolean toggle from its persisted document; missing/invalid => false (OFF). */
+export declare function isTaskDecompositionEnabled(document: {
+    value: unknown;
+} | undefined): boolean;
 /** Configuration chooses registered physical models; it cannot create adapters. */
 export declare function validatePairChoice(value: unknown, catalog: SettingsCatalog): PairChoice;
 /** New sessions can opt into this Worker cap. Frozen sessions keep their saved profile. */

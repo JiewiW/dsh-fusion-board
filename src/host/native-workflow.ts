@@ -77,7 +77,7 @@ export class NativeWorkflow {
     this.store.writeDocument(id, 0, { schemaVersion: 1, role, at: new Date().toISOString() })
     const progressId = `workflow-progress:${binding.taskId}:${agent.id}`, row = this.store.readDocument(progressId)
     this.store.writeDocument(progressId, row?.revision ?? 0, { schemaVersion: 1, milestone: this.milestone(binding), recent: [] })
-    agent.send(createUserMessage({ source: { kind: 'plugin:dsh-model-fusion', form: 'notice', summary: 'Fusion 检测到重复结果，正在调整执行方式' },
+    agent.send(createUserMessage({ source: { kind: 'plugin:dsh-fusion-board', form: 'notice', summary: 'Fusion 检测到重复结果，正在调整执行方式' },
       content: [{ type: 'text', text: 'The runtime detected repeated unchanged tool results. Use the evidence already collected and change the approach instead of repeating those calls. Continue the current task; delegate broad work if useful. Another unchanged cycle will pause this role without discarding progress.' }] }), 'next-step', false)
     return true
   }
@@ -95,7 +95,7 @@ export class NativeWorkflow {
     const id = `workflow-stop:${binding.taskId}:${agent.id}:${this.milestone(binding)}`
     if (this.store.readDocument(id)) return false
     this.store.writeDocument(id, 0, { schemaVersion: 1, role, at: new Date().toISOString() })
-    agent.send(createUserMessage({ source: { kind: 'plugin:dsh-model-fusion', form: 'notice', summary: 'Fusion 工作流尚未完成' },
+    agent.send(createUserMessage({ source: { kind: 'plugin:dsh-fusion-board', form: 'notice', summary: 'Fusion 工作流尚未完成' },
       content: [{ type: 'text', text: instruction }] }), 'next-step', false)
     return true
   }

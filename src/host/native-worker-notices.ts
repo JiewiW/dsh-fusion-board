@@ -44,7 +44,7 @@ export class NativeWorkerNotices {
     // Keep the entire original, including failure detail and closing blocks,
     // available through owned evidence. This projection claims no task success.
     const artifact = this.store.putArtifact(binding.taskId, Buffer.from(JSON.stringify(original)), 'application/vnd.dsh-fusion.worker-notice+json')
-    const message = createUserMessage({ source: { kind: 'plugin:dsh-model-fusion', form: 'notice', summary: source.summary },
+    const message = createUserMessage({ source: { kind: 'plugin:dsh-fusion-board', form: 'notice', summary: source.summary },
       content: [{ type: 'text', text: `${source.summary}\nThis is a Worker activation notice, not task acceptance. Use the structured Fusion report and check evidence; use fusion_wait if they have not been collected. Closing transcript is archived rather than repeated here. For missing failure details use fusion_read_evidence with id ${artifact.id}.\n${JSON.stringify({ childId: source.senderSessionId, originalMessageId: original.id, artifact })}` }] })
     this.store.writeDocument(id, 0, { schemaVersion: 1, taskId: binding.taskId, parentId: agent.id,
       childId: source.senderSessionId, originalMessageId: original.id, originalDigest, artifact, message } satisfies NoticeProjection)

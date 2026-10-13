@@ -1,3 +1,6 @@
+# dsh-fusion-board bundle patch：插入自研 fusion-board 插件行（Apache-2.0 fork of dsh-model-fusion）。
+# 开发/冒烟期以 `dsh web --port 3099 --patch <本文件绝对路径>` overlay 加载；
+# 相对路径由内核 anchorInsertedPluginNames 锚定到本文件所在目录并转 file:// URL。
 - insert:
-    - id: dsh-model-fusion
-      name: dsh-model-fusion
+    - id: dsh-external/dsh-fusion-board
+      name: ./lib/dsh-fusion-board.js

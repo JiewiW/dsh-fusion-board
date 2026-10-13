@@ -1,5 +1,5 @@
 /**
- * Plugin-domain contracts for dsh-model-fusion.
+ * Plugin-domain contracts for dsh-fusion-board.
  * These are proposed types, not existing DSH API declarations.
  * Convert DSH branded IDs only in a version-pinned bridge (not landed).
  */

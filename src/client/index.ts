@@ -9,7 +9,7 @@ import { FusionHint } from './FusionHint.js'
 import { FusionTool, fusionControlTools } from './FusionTool.js'
 import { bindLocale } from './i18n.js'
 
-export const name = 'dsh-model-fusion/client'
+export const name = 'dsh-fusion-board/client'
 export const inject = ['slots']
 
 export function apply(ctx: Context): void {
@@ -19,11 +19,11 @@ export function apply(ctx: Context): void {
     name: 'tool.call.toolview', key: tool,
   }, FusionTool))
   ctx.slots.inject('settings.section', () => ctx.slots.register({
-    name: 'settings.section', id: 'fusion', order: 18, label: () => 'Fusion', inject: () => ({}),
+    name: 'settings.section', id: 'fusion-board', order: 18, label: () => 'Fusion Board', inject: () => ({}),
   }, FusionSettings))
   ctx.inject(['modelDirectories'], scope => {
     scope.slots.inject('conversation.input.dock', () => scope.slots.register({
-      name: 'conversation.input.dock', id: 'fusion-configuration', order: 20,
+      name: 'conversation.input.dock', id: 'fusion-board-configuration', order: 20,
       inject: sessionId => {
         const directory = scope.modelDirectories.directoryFor(sessionId)
         return { sessionId, directory: directory.store, load: () => { void directory.load().catch(() => undefined) } }

@@ -60,10 +60,10 @@ export class NativeContextGuard {
     // on the current surface. Charge it too. JSON tool schemas use the public
     // message estimator with extra framing, rather than a private meter import.
     const text = (value: string) => meter.estimateMessage(createUserMessage({ content: [{ type: 'text', text: value }],
-      source: { kind: 'plugin:dsh-model-fusion' } }))
+      source: { kind: 'plugin:dsh-fusion-board' } }))
     const fixed = (system ? text(system) : 0) + (tools?.length ? text(JSON.stringify(tools)) : 0)
-    const actual = messages.reduce((total, message) => total + meter.estimateMessage(message.id ? message : createUserMessage({ content: message.content, source: { kind: 'plugin:dsh-model-fusion' } })), 0) + fixed
-    const pinned = messages.flatMap(message => message.source?.kind === 'plugin:dsh-model-fusion'
+    const actual = messages.reduce((total, message) => total + meter.estimateMessage(message.id ? message : createUserMessage({ content: message.content, source: { kind: 'plugin:dsh-fusion-board' } })), 0) + fixed
+    const pinned = messages.flatMap(message => message.source?.kind === 'plugin:dsh-fusion-board'
       && message.source.form === 'snapshot' ? message.source.sections.filter(section => section.name === FUSION_TASK_CONTEXT) : []).at(-1)
     // A summary cannot shrink the required current task snapshot, system prompt
     // or tool schemas. Reject an impossible restore before charging a summary.

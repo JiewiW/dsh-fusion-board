@@ -33,7 +33,7 @@ export function FusionRecovery({ sessionId, task }: { sessionId: string; task: N
       const response = await fetch('/api/model-fusion?view=catalog', { credentials: 'same-origin', cache: 'no-store' })
       if (!response.ok) throw new Error(tr(lang, '无法读取模型列表', 'Cannot read the model list'))
       const value = await response.json() as SettingsCatalog
-      setCatalog({ ...value, groups: value.groups.filter(group => group.id !== 'dsh-model-fusion') })
+      setCatalog({ ...value, groups: value.groups.filter(group => group.id !== 'dsh-fusion-board') })
     } catch (error) { setError(String(error)) }
   }
   return <section className="fusion-recovery" aria-label={tr(lang, 'Fusion 恢复操作', 'Fusion recovery')}>

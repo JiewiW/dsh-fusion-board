@@ -244,7 +244,7 @@ describe('native final context admission and compaction', () => {
     expect(blocked, JSON.stringify(store.listDocumentIds('context-recovery:').map(id => store.readDocument(id)?.value))).toEqual([])
     expect(adapter.requests.map(request => request.purpose ?? 'conversation')).toEqual(['conversation', 'compaction', 'conversation'])
     const retry = adapter.requests[2]!
-    const restored = retry.messages.find(message => message.source?.kind === 'plugin:dsh-model-fusion'
+    const restored = retry.messages.find(message => message.source?.kind === 'plugin:dsh-fusion-board'
       && message.source.form === 'snapshot')!
     expect(restored).toBeDefined()
     expect(JSON.stringify(restored.content)).toContain(constraint)
@@ -305,10 +305,10 @@ describe('native final context admission and compaction', () => {
       checkpoints: store.listDocumentIds('task-checkpoint:').map(id => store.readDocument(id)?.value),
     })).toEqual(['conversation', 'compaction', 'conversation'])
     const retry = adapter.requests[2]!
-    const section = retry.messages.flatMap(message => message.source?.kind === 'plugin:dsh-model-fusion' && message.source.form === 'snapshot'
+    const section = retry.messages.flatMap(message => message.source?.kind === 'plugin:dsh-fusion-board' && message.source.form === 'snapshot'
       ? message.source.sections.filter(section => section.name === FUSION_TASK_CONTEXT) : []).at(-1)!
     const facts = JSON.parse(section.text.slice(section.text.indexOf('\n') + 1)).facts
-    expect(retry.messages.flatMap(message => message.source?.kind === 'plugin:dsh-model-fusion' && message.source.form === 'snapshot'
+    expect(retry.messages.flatMap(message => message.source?.kind === 'plugin:dsh-fusion-board' && message.source.form === 'snapshot'
       ? message.source.sections.filter(candidate => candidate.name === FUSION_TASK_CONTEXT && candidate.text === section.text) : [])).toHaveLength(1)
     expect(facts.workerHandoffs).toMatchObject({ contentByteBudget: 40_000, totalRecords: 3, omittedRecords: 2,
       latestBriefRevision: 3, retainedContentBytes: 30_007, records: [{ revision: 3, content: briefs[2] }] })

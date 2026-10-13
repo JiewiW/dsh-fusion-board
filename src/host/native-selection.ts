@@ -8,24 +8,24 @@ import type { PhysicalRoute } from '../contracts.js'
 import type { ResolvedProfile } from '../profile/resolve.js'
 import type { FusionCoordinator } from './coordinator.js'
 
-export const FUSION_PROVIDER = 'dsh-model-fusion'
+export const FUSION_PROVIDER = 'dsh-fusion-board'
 export const FUSION_MODEL = 'auto'
 export const isFusionSelection = (route: { provider?: string; model?: string } | undefined): boolean =>
   route?.provider === FUSION_PROVIDER && route.model === FUSION_MODEL
 
 /** Catalog-only local adapter; the native request is physically routed before dispatch. */
 export class FusionCatalogAdapter extends LlmAdapter {
-  override providerInfo(provider: string) { return { id: provider, name: 'Fusion' } }
+  override providerInfo(provider: string) { return { id: provider, name: 'Fusion Board' } }
   override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
-    return [{ provider, id: FUSION_MODEL, name: 'Fusion · 自动',
-      description: 'Lead 与 Worker 协作。在设置 → Fusion 中配置模型。', inputModalities: ['text'] }]
+    return [{ provider, id: FUSION_MODEL, name: 'Fusion Board · 自动',
+      description: 'Lead 与 Worker 协作。在设置 → Fusion Board 中配置模型。', inputModalities: ['text'] }]
   }
   override async resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
     if (provider !== FUSION_PROVIDER || model !== FUSION_MODEL) throw new Error('Unknown local Fusion selection')
     return (await this.listModels(provider))[0]!
   }
   override async *stream(_options: GenerateOptions): AsyncIterable<StreamChunk> {
-    throw new Error('Fusion 尚未就绪。请前往设置 → Fusion 配置 Lead 和 Worker。')
+    throw new Error('Fusion Board 尚未就绪。请前往设置 → Fusion Board 配置 Lead 和 Worker。')
   }
 }
 
@@ -92,7 +92,7 @@ export function installNativeFusionSelection(ctx: Context, input: {
         // A newly installed exact-Agent interceptor can wrap this listener;
         // its physical route is applied after this continuation returns.
         // The catalog adapter itself cannot dispatch any upstream request.
-        if (!selected(agent)) throw new Error('请先在设置 → Fusion 配置 Lead 和 Worker，再继续此会话。')
+        if (!selected(agent)) throw new Error('请先在设置 → Fusion Board 配置 Lead 和 Worker，再继续此会话。')
       } else if (selected(agent)) throw new Error('先停止当前 Fusion 任务，再切换模型。')
       return config
     }, { prepend: true }),

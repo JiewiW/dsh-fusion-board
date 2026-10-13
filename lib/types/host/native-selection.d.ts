@@ -5,7 +5,7 @@ import type { GenerateOptions, LlmModelInfo, LlmResolvedModelInfo, StreamChunk }
 import type { PhysicalRoute } from '../contracts.js';
 import type { ResolvedProfile } from '../profile/resolve.js';
 import type { FusionCoordinator } from './coordinator.js';
-export declare const FUSION_PROVIDER = "dsh-model-fusion";
+export declare const FUSION_PROVIDER = "dsh-fusion-board";
 export declare const FUSION_MODEL = "auto";
 export declare const isFusionSelection: (route: {
     provider?: string;

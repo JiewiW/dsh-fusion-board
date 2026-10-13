@@ -427,7 +427,7 @@ describe('read-only exploration before a Lead plan', () => {
     expect(JSON.stringify(summaryRequest.messages)).toContain('Worker failed before it finished.')
     expect(parent.session.eventAt(original.seq)?.data).toEqual(raw)
     expect(parent.session.snapshotEvents().some(event => event.type === 'user/message'
-      && event.sourceEventSeqs?.includes(original.seq) && event.data.source?.kind === 'plugin:dsh-model-fusion')).toBe(true)
+      && event.sourceEventSeqs?.includes(original.seq) && event.data.source?.kind === 'plugin:dsh-fusion-board')).toBe(true)
     const records = store.listDocumentIds(`worker-notice:${taskId}:`).map(id => store.readDocument(id)!.value as { originalMessageId: string; artifact: { id: string } })
     const record = records.find(row => row.originalMessageId === raw.id)!
     expect(JSON.parse(Buffer.from(store.readArtifact(taskId, record.artifact.id)).toString())).toEqual(raw)
@@ -1457,7 +1457,7 @@ async function persistedToolResults(ctx: Context, sessionId: string) {
 }
 
 function taskSnapshot(request: Awaited<ReturnType<typeof setup>>['adapter']['requests'][number]) {
-  const section = request.messages.flatMap(message => message.source?.kind === 'plugin:dsh-model-fusion' && message.source.form === 'snapshot'
+  const section = request.messages.flatMap(message => message.source?.kind === 'plugin:dsh-fusion-board' && message.source.form === 'snapshot'
     ? message.source.sections.filter(section => section.name === FUSION_TASK_CONTEXT) : []).at(-1)
   if (!section) throw new Error('No native Fusion task snapshot')
   return JSON.parse(section.text.slice(section.text.indexOf('\n') + 1)).facts
@@ -1465,7 +1465,7 @@ function taskSnapshot(request: Awaited<ReturnType<typeof setup>>['adapter']['req
 
 /** The newest complete (post-compaction) snapshot; routine steps append compact ones. */
 function fullTaskSnapshot(request: Awaited<ReturnType<typeof setup>>['adapter']['requests'][number]) {
-  const facts = request.messages.flatMap(message => message.source?.kind === 'plugin:dsh-model-fusion' && message.source.form === 'snapshot'
+  const facts = request.messages.flatMap(message => message.source?.kind === 'plugin:dsh-fusion-board' && message.source.form === 'snapshot'
     ? message.source.sections.filter(section => section.name === FUSION_TASK_CONTEXT) : [])
     .map(section => JSON.parse(section.text.slice(section.text.indexOf('\n') + 1)).facts).filter(facts => facts.detail !== 'compact').at(-1)
   if (!facts) throw new Error('No complete Fusion task snapshot in this request')
@@ -2334,7 +2334,7 @@ describe('complete native Fusion workflow', () => {
     const dispose = parent.ctx.on('agent/pre-step', async (_payload, next) => {
       const decision = await next()
       return decision.kind === 'reject' ? decision : { ...decision, messages: decision.messages.filter(message =>
-        !(message.source?.kind === 'plugin:dsh-model-fusion' && message.source.form === 'snapshot')) }
+        !(message.source?.kind === 'plugin:dsh-fusion-board' && message.source.form === 'snapshot')) }
     }, { prepend: true })
     cleanups.push(async () => dispose())
     parent.followup(createUserMessage({ content: [{ type: 'text', text: 'Hello' }] }))
@@ -3039,7 +3039,7 @@ describe('model-like local continuation', () => {
     expect(adapter.requests).toHaveLength(2)
     expect(coordinator.state(taskId).phase).toBe('COMPLETED')
     const sent = parent.session.snapshotEvents().filter(event => event.type === 'agent/inbox/spliced'
-      && event.data.inserted.some(message => message.source?.kind === 'plugin:dsh-model-fusion'))
+      && event.data.inserted.some(message => message.source?.kind === 'plugin:dsh-fusion-board'))
     expect(sent).toHaveLength(1)
     expect(readFusionStatus(store, parent.id).task?.modelControl?.operation?.state).toBe('delivered')
     await expect(coordinator.modelControl.continue(parent.id, taskId, revision)).rejects.toThrow()
@@ -3126,7 +3126,7 @@ describe('model-like local continuation', () => {
     expect(restored.some(row => row.id.endsWith(`:${parent.id}`))).toBe(true)
     expect(restored.every(row => row.restored)).toBe(true)
     const pointers = adapter.requests.flatMap(request => request.messages).flatMap(message =>
-      message.source?.kind === 'plugin:dsh-model-fusion' && message.source.form === 'snapshot' ? message.source.sections : []).filter(section => section.name === 'fusion:resume')
+      message.source?.kind === 'plugin:dsh-fusion-board' && message.source.form === 'snapshot' ? message.source.sections : []).filter(section => section.name === 'fusion:resume')
     expect(pointers.length).toBeGreaterThan(0)
     expect(pointers.every(pointer => pointer.text.length < 600)).toBe(true)
   })

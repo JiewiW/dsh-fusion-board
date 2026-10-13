@@ -17,6 +17,29 @@ export interface SettingsCatalog {
   }[] }[]
 }
 
+/**
+ * Task-decomposition mode (M2 placeholder switch).
+ *
+ * Stored under its own Host document key, intentionally decoupled from the
+ * model-pair document 'settings:profile' so the experimental toggle can ship
+ * and persist without touching Lead/Worker configuration. Absent document or
+ * any non-true value means OFF, which must reproduce upstream behaviour
+ * exactly. ON currently only short-circuits delegation with a placeholder.
+ */
+export const DECOMPOSITION_SETTING_ID = 'settings:decomposition'
+
+/** Tool result returned to the Lead when decomposition mode is ON; no Sidekick is dispatched. */
+export const DECOMPOSITION_PLACEHOLDER = bi(
+  '任务分解模式建设中',
+  'Task decomposition mode is under construction',
+)
+
+/** Reads the boolean toggle from its persisted document; missing/invalid => false (OFF). */
+export function isTaskDecompositionEnabled(document: { value: unknown } | undefined): boolean {
+  const value = (document?.value as { taskDecompositionMode?: unknown } | undefined)?.taskDecompositionMode
+  return value === true
+}
+
 /** Configuration chooses registered physical models; it cannot create adapters. */
 export function validatePairChoice(value: unknown, catalog: SettingsCatalog): PairChoice {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(bi('请选择 Lead 和 Worker', 'Choose a Lead and a Sidekick'))

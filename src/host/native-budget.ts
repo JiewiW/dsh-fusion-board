@@ -74,7 +74,7 @@ export class NativeRequestBudget {
   check(routes: readonly PhysicalRoute[]): NativeSpendingAuthorization {
     const raw = this.authorizationFile ? JSON.parse(readFileSync(this.authorizationFile, 'utf8'))
       : this.store.readDocument('settings:authorization')?.value
-    if (!raw) throw new Error('请前往设置 → Fusion 启用调用额度')
+    if (!raw) throw new Error('请前往设置 → Fusion Board 启用调用额度')
     const auth = nativeAuthorization(raw)
     if (routes.some(route => !auth.routes.some(allowed => allowed.provider === route.provider && allowed.model === route.model))) {
       throw new Error('The frozen model configuration is outside this spending authorization')

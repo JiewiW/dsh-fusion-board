@@ -111,7 +111,7 @@ export class NativeFusionScopes {
       // Native selection compares the virtual menu route to the physical
       // request header. That is not a new model change on every Fusion step.
       return { ...decision, messages: [...decision.messages.filter(message => !(message.source?.kind === 'model-selection' && message.source.form === 'notice'
-        && message.source.summary.endsWith('dsh-model-fusion/auto'))).map(message =>
+        && message.source.summary.endsWith('dsh-fusion-board/auto'))).map(message =>
         this.callbacks.projectMessage?.(agent, entry.binding, role, message) ?? message), ...(taskContext ? [taskContext] : [])] }
     }, { prepend: true }))
     entry.dispose.push(scope.systemPrompt.section({ name: 'fusion-role', order: 90, text: entry.binding.prompts[role] }))

@@ -11,7 +11,7 @@ import type {} from '@deepseek-ai/dsh-commands'
 import type {} from '@deepseek-ai/dsh-agent-default-model'
 import { FusionCatalogAdapter, FUSION_PROVIDER, FUSION_MODEL, installNativeFusionSelection } from './host/native-selection.js'
 import type { ResolvedProfile } from './profile/resolve.js'
-import { choiceFromProfile, modelProfileFromChoice, validatePairChoice } from './host/settings.js'
+import { choiceFromProfile, DECOMPOSITION_SETTING_ID, isTaskDecompositionEnabled, modelProfileFromChoice, validatePairChoice } from './host/settings.js'
 import { CachePolicy, cacheView } from './host/cache-policy.js'
 import { CACHE_DEFAULTS_CHECKED } from './host/cache-defaults.js'
 import { loadJsonObject, resolveProfile } from './profile/resolve.js'
@@ -28,7 +28,7 @@ import { nativeShellTool } from './host/shell.js'
 
 export * from './index.js'
 
-export const name = 'dsh-model-fusion'
+export const name = 'dsh-fusion-board'
 export const inject = ['agents', 'sessions', 'llm', 'tools', 'subagents', 'systemPrompt', 'webServer', 'sessionController', 'sessionQuery', 'commands', 'agentDefaultModel', 'tokenMeter']
 export interface Config { profilePath?: string; authorizationPath?: string; databasePath?: string; workerTools?: string[] }
 const defaultWorkerTools = [nativeShellTool, 'read', 'write', 'edit', 'glob', 'grep', 'job_output', 'job_kill']
@@ -53,7 +53,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
   const configuredProfile = async (): Promise<ResolvedProfile> => {
     defaultProfile = undefined
     const saved = store.readDocument('settings:profile')
-    if (!saved && (!config.profilePath || !isAbsolute(config.profilePath))) throw new Error(bi('请先在设置的 Fusion 页面选择 Lead 和 Worker', 'Open Settings → Fusion and choose a Lead and a Sidekick first'))
+    if (!saved && (!config.profilePath || !isAbsolute(config.profilePath))) throw new Error(bi('请先在设置的 Fusion Board 页面选择 Lead 和 Worker', 'Open Settings → Fusion Board and choose a Lead and a Sidekick first'))
     const raw = saved?.value as Record<string, unknown> | undefined ?? loadJsonObject(config.profilePath!)
     const catalog = await physicalCatalog()
     const pair = validatePairChoice(raw, catalog)
@@ -135,6 +135,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
         }
         if (url.searchParams.get('view') === 'settings') {
           const saved = store.readDocument('settings:profile')
+          const decomposition = store.readDocument(DECOMPOSITION_SETTING_ID)
           let profile: ResolvedProfile | undefined, reason: string | undefined, authorized = false
           try {
             profile = await configuredProfile()
@@ -142,7 +143,8 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
           } catch (error) { reason = error instanceof Error ? error.message : String(error) }
           return json(res, 200, { revision: saved?.revision ?? 0, catalog: await physicalCatalog(),
             pair: profile ? choiceFromProfile(profile.profile) : null,
-            authorized, reason, managedAuthorization: Boolean(config.authorizationPath), policy: profile?.profile.interactionMode ?? 'legacy', actualBilledUsd: null, apiEquivalentUsd: null })
+            authorized, reason, managedAuthorization: Boolean(config.authorizationPath), policy: profile?.profile.interactionMode ?? 'legacy', actualBilledUsd: null, apiEquivalentUsd: null,
+            taskDecompositionMode: isTaskDecompositionEnabled(decomposition), decompositionRevision: decomposition?.revision ?? 0 })
         }
         const sessionId = url.searchParams.get('sessionId') ?? ''
         const binding = sessionId && bindings.read(sessionId)?.binding
@@ -195,6 +197,15 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
         cachePolicy.save(body.provider, body.model, setting)
         return json(res, 200, { ok: true })
       }
+      if (body.action === 'decomposition-setting') {
+        if (typeof body.enabled !== 'boolean') throw new Error(bi('任务分解开关必须是布尔值', 'The task decomposition switch must be a boolean'))
+        if (!Number.isSafeInteger(body.revision) || Number(body.revision) < 0) throw new Error(bi('配置版本无效，请刷新后重试', 'Invalid settings revision; refresh and retry'))
+        const current = store.readDocument(DECOMPOSITION_SETTING_ID)
+        const expected = current?.revision ?? 0
+        if (expected !== Number(body.revision)) throw new Error(bi('设置已变化，请刷新后重试', 'The setting changed; refresh and retry'))
+        const revision = store.writeDocument(DECOMPOSITION_SETTING_ID, expected, { taskDecompositionMode: body.enabled })
+        return json(res, 200, { ok: true, revision })
+      }
       if (body.action === 'configure') {
         if (!Number.isSafeInteger(body.revision) || Number(body.revision) < 0) throw new Error(bi('配置版本无效，请刷新后重试', 'Invalid settings revision; refresh and retry'))
         const pair = validatePairChoice(body.pair, await physicalCatalog())
@@ -221,7 +232,7 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
       const [action = 'status', ...note] = invocation.rawInput.trim().split(/\s+/)
       try {
         const binding = bindings.read(invocation.agent.id)?.binding
-        if (!binding?.selected) return { kind: 'success', text: bi('当前会话未启用 Fusion。请在模型选择器中选择 Fusion · 自动。', 'Fusion is not selected in this conversation. Choose Fusion · auto in the model menu.') }
+        if (!binding?.selected) return { kind: 'success', text: bi('当前会话未启用 Fusion Board。请在模型选择器中选择 Fusion Board · 自动。', 'Fusion Board is not selected in this conversation. Choose Fusion Board · auto in the model menu.') }
         if (action === 'status' || action === '') {
           const controller = await getRuntime({ profile: binding.profile, prompts: binding.prompts })
           const state = store.load(binding.taskId)!
@@ -258,5 +269,5 @@ export async function apply(ctx: Context, config: Config = {}): Promise<void> {
     const selected = bindings.selected()[0]
     if (selected) await getRuntime({ profile: selected.profile, prompts: selected.prompts })
   }
-  ctx.logger.info('[my-plugins/dsh-model-fusion] loaded')
+  ctx.logger.info('[my-plugins/dsh-fusion-board] loaded')
 }

@@ -29,7 +29,7 @@ describe('independent Fusion settings', () => {
   })
   it('requires both explicitly configured physical models, including their supported efforts', () => {
     expect(() => validatePairChoice({}, catalog)).toThrow('请选择')
-    expect(() => validatePairChoice({ ...pair, worker: { provider: 'dsh-model-fusion', model: 'auto' } }, catalog)).toThrow('真实模型')
+    expect(() => validatePairChoice({ ...pair, worker: { provider: 'dsh-fusion-board', model: 'auto' } }, catalog)).toThrow('真实模型')
     expect(() => validatePairChoice({ ...pair, worker: { provider: 'physical', model: 'missing' } }, catalog)).toThrow('不可用')
     expect(() => validatePairChoice({ ...pair, worker: { ...pair.worker, reasoningEffort: 'high' } }, catalog)).toThrow('推理强度')
     expect(validatePairChoice(pair, catalog)).toEqual(pair)
@@ -78,7 +78,7 @@ describe('independent Fusion settings', () => {
       expect(() => validatePairChoice({ ...pair, compactor: invalid }, catalog)).toThrow()
       expect(() => completeProfile({ ...profileFromChoice(pair), compactor: invalid }, loadPromptBundle())).toThrow()
     }
-    expect(() => validatePairChoice({ ...pair, compactor: { ...compactor, route: { provider: 'dsh-model-fusion', model: 'auto' } } }, catalog)).toThrow('真实模型')
+    expect(() => validatePairChoice({ ...pair, compactor: { ...compactor, route: { provider: 'dsh-fusion-board', model: 'auto' } } }, catalog)).toThrow('真实模型')
     expect(() => validatePairChoice({ ...pair, compactor: { ...compactor, route: { provider: 'physical', model: 'missing' } } }, catalog)).toThrow('不可用')
     expect(() => validatePairChoice({ ...pair, compactor: { ...compactor, route: { ...pair.worker, reasoningEffort: 'high' } } }, catalog)).toThrow('推理强度')
   })
