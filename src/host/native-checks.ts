@@ -55,6 +55,21 @@ export function checkCommandUnavailable(exitCode: number | null, stderr: string,
     || /\bThe term ['"][^'"]+['"] is not recognized as (?:the |a )?name of a cmdlet, function, script file, or (?:executable|operable) program\b/i.test(text)
 }
 
+/**
+ * Windows PowerShell reports CommandNotFoundException in the machine's UI language, while
+ * checkCommandUnavailable above matches the English message (and the exception id) only. A missing
+ * program in the second half of a compound command is then misread as a normal check failure.
+ * Pinning the UI culture to en-US inside the check process keeps the classifier language-independent
+ * without matching localized strings. The guard skips the assignment under ConstrainedLanguage,
+ * where .NET static calls are denied; the pinned form was probe-verified (stdout stays clean).
+ */
+const WIN_UI_CULTURE_PIN = "if ($ExecutionContext.SessionState.LanguageMode -eq 'FullLanguage') { [Threading.Thread]::CurrentThread.CurrentUICulture = [Globalization.CultureInfo]::new('en-US') }; "
+
+/** Command as actually executed. Digests, audit trails and receipts keep the frozen definition unchanged. */
+export function commandForExecution(command: string, platform: NodeJS.Platform = process.platform): string {
+  return platform === 'win32' ? WIN_UI_CULTURE_PIN + command : command
+}
+
 function definitionDigest(root: string, definition: CheckDefinition) {
   return digestOf({ definition, files: definition.definitionPaths.map(path => ({ path, digest: sha256Hex(readFileSync(workspacePath(root, path))) })) })
 }
@@ -368,7 +383,7 @@ async function invokeCheck(input: CheckInput, check: FrozenCheck) {
   let result
   try {
     result = await ctx.tools.execute({ callId, rootCallId: exec.rootCallId, parent: exec.token,
-      name: nativeShellTool, arguments: { command: check.definition.command, description: check.definition.description,
+      name: nativeShellTool, arguments: { command: commandForExecution(check.definition.command), description: check.definition.description,
         workdir: root, ...(input.nativeTimeout && check.definition.timeoutSeconds === undefined ? {} : { timeoutMs: (check.definition.timeoutSeconds ?? order.policy.commandMaxSeconds) * 1000 }), run_in_background: false },
       agent: exec.agent, signal: exec.signal })
   } catch (error) {

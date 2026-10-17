@@ -1,7 +1,17 @@
 import { describe, expect, it } from 'vitest'
-import { checkCommandUnavailable } from '../src/host/native-checks.js'
+import { checkCommandUnavailable, commandForExecution } from '../src/host/native-checks.js'
 
 describe('acceptance command setup failures', () => {
+  it('pins the Windows check process to an en-US UI culture, leaving POSIX untouched', () => {
+    const wrapped = commandForExecution("python -B -c 'x' && ./fusion-missing-runner", 'win32')
+    expect(wrapped).toContain("CurrentUICulture = [Globalization.CultureInfo]::new('en-US')")
+    expect(wrapped).toContain("LanguageMode -eq 'FullLanguage'")
+    expect(wrapped.endsWith("python -B -c 'x' && ./fusion-missing-runner")).toBe(true)
+    expect(commandForExecution('npm test', 'linux')).toBe('npm test')
+    expect(commandForExecution('npm test', 'darwin')).toBe('npm test')
+  })
+
+
   it('retains the POSIX command-not-found and not-executable exit codes', () => {
     expect(checkCommandUnavailable(126, '', 'darwin')).toBe(true)
     expect(checkCommandUnavailable(127, '', 'linux')).toBe(true)

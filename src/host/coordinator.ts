@@ -50,7 +50,47 @@ import { CachePolicy } from './cache-policy.js'
 import type { ChangeBase } from './change-evidence.js'
 import { evidencePage } from './evidence-page.js'
 import { readNativeEvidence } from './native-evidence.js'
-import { DECOMPOSITION_PLACEHOLDER, DECOMPOSITION_SETTING_ID, isTaskDecompositionEnabled } from './settings.js'
+import { DECOMPOSITION_SETTING_ID, isTaskDecompositionEnabled } from './settings.js'
+import { runS1S2FromJson } from '../decompose/pipeline.js'
+import type { CardTriplet, TripletOptions } from '../decompose/triplet.js'
+import {
+  estimateChainBudget,
+  evaluateBatchGate,
+  formatBudgetConfirmation,
+  formatDegradationNotice,
+  restoreReviewChain,
+  PromptReviewChain,
+  type AdjudicationRow,
+  type DegradationMark,
+  type DismissedHigh,
+} from '../decompose/review-gate.js'
+import {
+  REVIEW_TIMEOUT_MS,
+  missingServiceMarks,
+  runInitialReviews,
+  runRereview,
+  type DocReviewService,
+} from '../decompose/review-runner.js'
+import {
+  applyBackfillText,
+  buildBackfills,
+  buildCreateSpecs,
+  formatDeliveryDocument,
+  isCreateSessionStateError,
+  planCreateRecovery,
+  verifyCreatedBoard,
+  BOARD_CREATE_TOOL,
+  BOARD_UPDATE_TOOL,
+  BOARD_LIST_TOOL,
+  BOARD_GET_TOOL,
+  type AdoptedCard,
+  type BoardGetCard,
+  type CardCreateSpec,
+  type CreatePlan,
+} from '../decompose/card-creation.js'
+
+/** ON 模式（任务分解）下 fusion_delegate 的门控指引：S1→S2 未跑完前禁止直接派活。 */
+export const ON_MODE_DELEGATE_GUIDANCE = 'Task decomposition mode is ON: direct delegation is gated. First complete S1 — produce the decomposition JSON and submit it via fusion_decompose; S2 card triplets are generated and TB-C5 machine-checked there. Do not call fusion_delegate until the S2 triplets are delivered (card creation is S4, a later milestone).'
 
 const textOutput = { schema: { type: 'string' as const }, render: (_args: unknown, text: string) => [{ type: 'text' as const, text }] }
 const stringList = { type: 'array' as const, items: { type: 'string' as const }, required: true as const }
@@ -58,7 +98,14 @@ const optionalStringList = { type: 'array' as const, items: { type: 'string' as 
 const READ_TOOLS = new Set(['fusion_read_state', 'glob', 'grep', 'read', 'fusion_read_evidence', 'job_output'])
 const isRead = (exec: Readonly<ToolExecution>) => READ_TOOLS.has(exec.name)
   || exec.name === 'str_replace_editor' && (exec.arguments as { command?: unknown }).command === 'view'
-const FUSION_TOOLS = new Set(['fusion_read_state', 'fusion_delegate_text', 'fusion_explore', 'fusion_delegate', 'fusion_rework', 'fusion_wait', 'fusion_review_result', 'fusion_submit_result', 'fusion_takeover', 'fusion_finish_direct', 'fusion_read_evidence'])
+const FUSION_TOOLS = new Set(['fusion_read_state', 'fusion_delegate_text', 'fusion_explore', 'fusion_delegate', 'fusion_rework', 'fusion_wait', 'fusion_review_result', 'fusion_submit_result', 'fusion_takeover', 'fusion_finish_direct', 'fusion_read_evidence', 'fusion_decompose'])
+/** M4 S3 审查门工具名集合（仅 ON 模式注册，加入 FUSION_TOOLS 以通过装配过滤）。 */
+const S3_TOOL_NAMES = ['fusion_review_gate', 'fusion_review_gate_adj', 'fusion_review_gate_finalize'] as const
+for (const name of S3_TOOL_NAMES) FUSION_TOOLS.add(name)
+/** M5 S4 建卡适配层工具名集合（仅 ON 模式注册，加入 FUSION_TOOLS 以通过装配过滤）。 */
+const S4_TOOL_NAMES = ['fusion_card_plan', 'fusion_card_recover', 'fusion_card_backfill', 'fusion_card_verify'] as const
+for (const name of S4_TOOL_NAMES) FUSION_TOOLS.add(name)
+
 export interface CoordinatorOptions {
   profile: ResolvedProfile
   workerTools: readonly string[]
@@ -1040,11 +1087,12 @@ export class FusionCoordinator {
   }
 
   async delegate(agent: Agent, args: DelegateInput, exec: ToolRunContext, mode: 'explore' | 'implement' | 'text' = 'implement'): Promise<string> {
-    // M2 placeholder gate (taskDecompositionMode). ON returns a fixed tool
-    // result before any state is touched: no Sidekick dispatch, no task card,
-    // no review. OFF (default; missing/non-true document) falls through to the
-    // unchanged upstream delegation logic below.
-    if (isTaskDecompositionEnabled(this.store.readDocument(DECOMPOSITION_SETTING_ID))) return DECOMPOSITION_PLACEHOLDER
+    // M3 ON-mode gate (taskDecompositionMode). ON: direct delegation returns a
+    // fixed guidance result before any state is touched — the Lead must run S1
+    // (decomposition) via the fusion_decompose tool, which produces and
+    // machine-checks the S2 card triplets. OFF (default; missing/non-true
+    // document) falls through to the unchanged upstream delegation logic below.
+    if (isTaskDecompositionEnabled(this.store.readDocument(DECOMPOSITION_SETTING_ID))) return ON_MODE_DELEGATE_GUIDANCE
     const binding = this.#binding(agent, 'lead')
     const priorState = this.state(binding.taskId)
     const held = this.#held.get(binding.taskId)
@@ -1651,6 +1699,202 @@ export class FusionCoordinator {
     await agent.whenIdle()
   }
 
+  // ── M4 S3 卡片 prompt 审查门（FT10–FT13；仅 ON 模式） ─────────────────────
+  #reviewStateKey(taskId: TaskId): string { return `decompose:review:${taskId}` }
+  #reviewConfirmKey(taskId: TaskId): string { return `decompose:review:confirm:${taskId}` }
+  #reviewResultKey(taskId: TaskId): string { return `decompose:result:${taskId}` }
+
+  #s4StateKey(taskId: TaskId): string { return `decompose:s4:${taskId}` }
+
+  #loadReviewChains(taskId: TaskId): PromptReviewChain[] {
+    const doc = this.store.readDocument(this.#reviewStateKey(taskId))
+    const rawChains = (doc?.value as { chains?: unknown } | undefined)?.chains
+    if (!Array.isArray(rawChains)) return []
+    return rawChains.map(raw => restoreReviewChain(raw as Parameters<typeof restoreReviewChain>[0]))
+  }
+
+  #saveReviewChains(taskId: TaskId, chains: readonly PromptReviewChain[]): void {
+    const key = this.#reviewStateKey(taskId)
+    const prior = this.store.readDocument(key)
+    this.store.writeDocument(key, prior?.revision ?? 0, { schemaVersion: 1, chains: chains.map(chain => chain.serialize()) })
+  }
+
+  #loadReviewTriplets(taskId: TaskId): readonly CardTriplet[] {
+    const doc = this.store.readDocument(this.#reviewResultKey(taskId))
+    return ((doc?.value as { triplets?: readonly CardTriplet[] } | undefined)?.triplets) ?? []
+  }
+
+  #docReviewService(scope: Context): DocReviewService | undefined {
+    const service = scope.get('docReview') as { reviewPrompt?: unknown } | undefined
+    return service && typeof service.reviewPrompt === 'function' ? (service as DocReviewService) : undefined
+  }
+  /** 汇总批次门状态为工具返回 JSON 载荷（FT11 放行门 + FT13 降级明细）。 */
+  #batchGatePayload(chains: readonly PromptReviewChain[]): {
+    readonly released: boolean
+    readonly releasedCount: number
+    readonly blocked: readonly { unitIndex: number; title: string; highIssueIds: readonly string[]; reason: string }[]
+    readonly degraded: readonly DegradationMark[]
+    readonly chains: readonly { unitIndex: number; title: string; state: string; rounds: number; remainingHighIssueIds: readonly string[]; degradation: DegradationMark | null; lastReport: unknown }[]
+  } {
+    const gate = evaluateBatchGate(chains)
+    return {
+      released: gate.released,
+      releasedCount: gate.releasedCount,
+      blocked: gate.blocked,
+      degraded: gate.degraded,
+      chains: chains.map(chain => {
+        const lastRecord = chain.rounds[chain.rounds.length - 1]
+        return {
+          unitIndex: chain.unitIndex,
+          title: chain.title,
+          state: chain.state,
+          rounds: chain.rounds.length,
+          remainingHighIssueIds: chain.remainingHighIds(),
+          degradation: chain.degradation ?? null,
+          lastReport: lastRecord ? { round: lastRecord.round, report: lastRecord.report, scopedIssueIds: lastRecord.scopedIssueIds, adjudication: lastRecord.adjudication } : null,
+        }
+      }),
+    }
+  }
+
+  /** S3 定稿 prompt 解析：修订无 high 复审→finalPromptText；有复审→最后轮送审稿；否则原稿。 */
+  #finalPromptFor(chains: readonly PromptReviewChain[], triplet: CardTriplet): string {
+    const chain = chains.find(candidate => candidate.unitIndex === triplet.unitIndex)
+    if (chain === undefined) return triplet.prompt
+    if (typeof chain.finalPromptText === 'string' && chain.finalPromptText.trim() !== '') return chain.finalPromptText
+    const lastRound = chain.rounds[chain.rounds.length - 1]
+    return lastRound?.promptText ?? triplet.prompt
+  }
+
+  #loadS4State(taskId: TaskId): { plan?: CreatePlan; adopted?: readonly AdoptedCard[]; goal?: string } {
+    const doc = this.store.readDocument(this.#s4StateKey(taskId))
+    return (doc?.value as { plan?: CreatePlan; adopted?: readonly AdoptedCard[]; goal?: string }) ?? {}
+  }
+
+  #parseJsonArrayArg(raw: unknown): { ok: true; value: unknown[] } | { ok: false; message: string } {
+    let parsed: unknown
+    try {
+      parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
+    } catch (error) {
+      return { ok: false, message: `入参不是合法 JSON：${String(error instanceof Error ? error.message : error)}` }
+    }
+    return Array.isArray(parsed) ? { ok: true, value: parsed } : { ok: false, message: '入参必须是 JSON 数组' }
+  }
+
+  /** FT14：S3 放行后产出有序建卡规格（插件不建卡，Lead 会话照单调看板建卡工具）。 */
+  #s4Plan(taskId: TaskId, goalText: string): string {
+    const chains = this.#loadReviewChains(taskId)
+    const gate = evaluateBatchGate(chains)
+    if (!gate.released) {
+      return JSON.stringify({ kind: 'gate-blocked', ...this.#batchGatePayload(chains) })
+    }
+    const resultDoc = this.store.readDocument(this.#reviewResultKey(taskId))
+    const result = (resultDoc?.value as { planId?: string; branch?: number; triplets?: readonly CardTriplet[] } | undefined)
+    const triplets = result?.triplets ?? []
+    if (triplets.length === 0) return JSON.stringify({ kind: 'no-triplets', message: 'S2 未产出 triplets：先成功调用 fusion_decompose。' })
+    const branch = result?.branch ?? 3
+    const topology: CreatePlan['topology'] = branch === 1 ? 'parallel' : branch === 4 ? 'mixed' : 'serial'
+    const finalized = triplets.map(triplet => ({ ...triplet, prompt: this.#finalPromptFor(chains, triplet) }))
+    const plan = buildCreateSpecs(result?.planId ?? '', branch, topology, finalized)
+    this.store.writeDocument(this.#s4StateKey(taskId), 0, {
+      schemaVersion: 1, plan, goal: goalText, at: new Date().toISOString(),
+    })
+    return JSON.stringify({
+      kind: 'plan-ready',
+      planId: plan.planId,
+      topology,
+      branch,
+      count: plan.specs.length,
+      specs: plan.specs,
+      instructions: [
+        `按 specs 顺序逐张调用看板建卡工具（${BOARD_CREATE_TOOL}）：root/parent 不传 parentId；child 传 parentCreateIndex 所指父卡建卡后返回的真实 id。`,
+        '全部卡片必须落为 todo；本流程禁止任何执行类调用（FT16 只建不跑）。',
+        `建卡报 losslessly JSON-serializable 错时：先用 ${BOARD_LIST_TOOL} 按标题回读防重复卡，再调 fusion_card_recover 判定，禁止盲重建（D3）。`,
+        '全部建完并收齐 {index,id,title} 后调用 fusion_card_backfill 生成串行链前置 id 回填载荷。',
+      ],
+    })
+  }
+
+  /** FT15：先全建拿 id，再生成串行链 description/prompt 占位符回填的完整 update 载荷。 */
+  #s4Backfill(taskId: TaskId, adoptedRaw: unknown): string {
+    const state = this.#loadS4State(taskId)
+    if (state.plan === undefined) return JSON.stringify({ kind: 'no-plan', message: '先调用 fusion_card_plan。' })
+    const parsed = this.#parseJsonArrayArg(adoptedRaw)
+    if (!parsed.ok) return JSON.stringify({ kind: 'bad-json', message: parsed.message })
+    const adopted = (parsed.value as Array<{ index?: unknown; id?: unknown; title?: unknown }>).map((row, ordinal) => ({
+      index: Number(row.index ?? ordinal), id: String(row.id ?? ''), title: String(row.title ?? ''),
+    })).filter(row => row.id !== '')
+    const backfills = buildBackfills(state.plan, adopted)
+    const updates = backfills.map(backfill => {
+      const spec = state.plan!.specs[backfill.index]
+      const description = applyBackfillText(spec.description, backfill)
+      const prompt = applyBackfillText(spec.prompt, backfill)
+      return {
+        index: backfill.index, cardId: backfill.cardId, tool: BOARD_UPDATE_TOOL,
+        descriptionReplaced: description.replaced, promptReplaced: prompt.replaced,
+        fields: { description: description.text, prompt: prompt.text },
+      }
+    })
+    const badReplace = updates.filter(update => update.descriptionReplaced !== 1 || update.promptReplaced !== 1)
+    this.store.writeDocument(this.#s4StateKey(taskId), this.store.readDocument(this.#s4StateKey(taskId))?.revision ?? 0,
+      { ...state, adopted, at: new Date().toISOString() })
+    return JSON.stringify({
+      kind: badReplace.length === 0 ? 'backfill-ready' : 'backfill-placeholder-anomaly',
+      updates,
+      note: badReplace.length === 0
+        ? `逐张调用 ${BOARD_UPDATE_TOOL}，按 cardId 写入 fields.description/fields.prompt；完成后逐张 ${BOARD_GET_TOOL} 回读并交 fusion_card_verify 机检。`
+        : '存在占位符出现次数≠1 的卡，禁止回填，先核对规格与落库卡是否串卡。',
+    })
+  }
+
+  /** FT15/D3：建卡会话累积态错误的防重复卡判定（adopt 已落库 / unstick+重试≤2 / 停止报清单）。 */
+  #s4Recover(taskId: TaskId, indexRaw: unknown, errorText: string, boardListRaw: unknown, retryAttemptRaw: unknown): string {
+    const state = this.#loadS4State(taskId)
+    if (state.plan === undefined) return JSON.stringify({ kind: 'no-plan', message: '先调用 fusion_card_plan。' })
+    if (!isCreateSessionStateError(String(errorText))) {
+      return JSON.stringify({ kind: 'not-session-state-error', message: '非已知 JSON-serializable 累积态错误，按 §6 D3 通用建卡失败处理：不盲重试，先回读列表。' })
+    }
+    const parsed = this.#parseJsonArrayArg(boardListRaw)
+    if (!parsed.ok) return JSON.stringify({ kind: 'bad-json', message: parsed.message })
+    const boardList = parsed.value as Array<{ id?: unknown; title?: unknown; status?: unknown }>
+    const spec = state.plan.specs[Number(indexRaw)]
+    if (spec === undefined) return JSON.stringify({ kind: 'unknown-index', index: Number(indexRaw) })
+    const decision = planCreateRecovery(spec, boardList.map(row => ({
+      id: String(row.id ?? ''), title: String(row.title ?? ''), ...(row.status !== undefined ? { status: String(row.status) } : {}),
+    })), Number(retryAttemptRaw ?? 0))
+    return JSON.stringify({ kind: 'recovery-decision', ...decision })
+  }
+
+  /** FT14–FT16：建后回读机检；通过则产出只建不跑交付文档（有序清单+审查摘要+人工执行建议）。 */
+  #s4Verify(taskId: TaskId, cardsRaw: unknown): string {
+    const state = this.#loadS4State(taskId)
+    if (state.plan === undefined) return JSON.stringify({ kind: 'no-plan', message: '先调用 fusion_card_plan。' })
+    const parsed = this.#parseJsonArrayArg(cardsRaw)
+    if (!parsed.ok) return JSON.stringify({ kind: 'bad-json', message: parsed.message })
+    const cards = (parsed.value as unknown[]).filter((row): row is Record<string, unknown> => typeof row === 'object' && row !== null)
+      .map(row => ({
+        id: String(row.id ?? ''), title: String(row.title ?? ''), status: String(row.status ?? ''),
+        ...(typeof row.parentId === 'string' ? { parentId: row.parentId } : {}),
+        ...(typeof row.depth === 'number' ? { depth: row.depth } : {}),
+        ...(Array.isArray(row.tags) ? { tags: (row.tags as unknown[]).map(tag => ({ name: String((tag as { name?: unknown })?.name ?? '') })) } : {}),
+        description: String(row.description ?? ''),
+        ...(typeof row.prompt === 'string' ? { prompt: row.prompt } : {}),
+        ...(typeof row.executionCount === 'number' ? { executionCount: row.executionCount } : {}),
+      } satisfies BoardGetCard))
+    const result = verifyCreatedBoard(state.plan, cards)
+    if (!result.ok) return JSON.stringify({ kind: 'verify-failed', ...result })
+    const chains = this.#loadReviewChains(taskId)
+    const highOpen = chains.reduce((sum, chain) => sum + chain.remainingHighIds().length, 0)
+    const delivery = formatDeliveryDocument({
+      goal: state.goal ?? '', planId: state.plan.planId, topology: state.plan.topology,
+      entries: state.plan.specs.map((spec, ordinal) => ({
+        seq: spec.serialIndex ?? ordinal + 1, title: spec.title,
+        id: result.adopted.find(card => card.index === spec.index)?.id ?? '', relation: spec.relation,
+      })),
+      review: { releasedCount: chains.length, totalPrompts: chains.length, highOpen },
+    })
+    return JSON.stringify({ kind: 'verified', ...result, deliveryDocument: delivery })
+  }
   #tools(scope: Context, agent: Agent, role: Role): readonly (() => void)[] {
     const dispose = [scope.tools.register(defineTool({ name: 'fusion_read_evidence', description: 'Read owned evidence, including check receipt IDs from report coverage. Receipts include the frozen check, actual result and stdout/stderr references. Change manifests contain complete patch and before/after content references. Follow nextOffset until null to read a long artifact; binary content is explicitly base64.',
       parameters: { id: { type: 'string', required: true }, offset: { type: 'integer', description: 'Text offset in UTF-16 code units; use nextOffset from the previous page. Default 0.' },
@@ -1797,6 +2041,222 @@ export class FusionCoordinator {
           items: { type: 'object', additionalProperties: false, properties: { index: { type: 'integer', required: true }, met: { type: 'boolean', required: true },
             evidence: { type: 'string', required: true, description: 'Where the candidate satisfies it: file and line, or the test that proves it.' } } } } }, output: textOutput,
       execute: async (args, exec) => this.review(agent, args.decision, args.reason, exec, args.requirements ?? []) })))
+    // M3 S1/S2 service tool — registered ONLY while task decomposition mode is
+    // ON (OFF: nothing is registered here and the OFF tool surface is unchanged;
+    // the extra FUSION_TOOLS name is inert because assembly filters by actually
+    // registered tools). It validates the Lead-authored decomposition JSON
+    // (Schema + TB-P1 derived topology agreement) and generates the S2 card
+    // triplets with the TB-C5 machine check. Attempt counting (max 3 = first +
+    // 2 corrections, §3.3/§6) lives in a store document; exhausting it degrades
+    // to "report the user, create no cards".
+    if (isTaskDecompositionEnabled(this.store.readDocument(DECOMPOSITION_SETTING_ID))) {
+      dispose.push(scope.tools.register(defineTool({ name: 'fusion_decompose', description: 'S1/S2 service for task decomposition mode. Submit the complete decomposition JSON you authored; the Host validates it against the Schema and the TB-P1 topology rules, and on success returns the S2 card triplets (title/description/prompt/tags), each machine-checked against the TB-C5 eleven-item list. On failure it returns the issue list — fix every issue and resend the COMPLETE JSON. A malformed attempt consumes one of three attempts; after three the run degrades to reporting the user without creating cards. Do not call fusion_delegate while decomposition mode is ON.',
+        parameters: { decomposition: { type: 'string', required: true, description: 'The complete decomposition JSON text (goal, blocks[], topology, rationale).' },
+          workspaceRoot: { type: 'string', description: 'Absolute workspace path embedded in the card prompts; defaults to the session cwd.' } }, output: textOutput,
+        execute: async (args) => {
+          const binding = this.#binding(agent, 'lead')
+          const key = `decompose:attempts:${binding.taskId}`
+          const prior = this.store.readDocument(key)
+          const attempts = (prior?.value as { attempts?: number } | undefined)?.attempts ?? 0
+          const options: TripletOptions = { workspaceRoot: args.workspaceRoot?.trim() || agent.session.header.cwd || '.' }
+          const outcome = runS1S2FromJson(args.decomposition, options, attempts)
+          const row = this.store.readDocument(key)
+          if (outcome.kind === 'issues') {
+            this.store.writeDocument(key, row?.revision ?? 0, { schemaVersion: 1, attempts: attempts + 1 })
+          } else {
+            this.store.writeDocument(key, row?.revision ?? 0, { schemaVersion: 1, attempts: 0 })
+          }
+          if (outcome.kind === 'ok') {
+            const resultKey = `decompose:result:${binding.taskId}`
+            const resultPrior = this.store.readDocument(resultKey)
+            this.store.writeDocument(resultKey, resultPrior?.revision ?? 0, { schemaVersion: 1, planId: outcome.planId, branch: outcome.branch, triplets: outcome.triplets, at: new Date().toISOString() })
+          }
+          return JSON.stringify({ kind: outcome.kind, attemptsUsed: outcome.kind === 'issues' ? attempts + 1 : attempts, planId: outcome.kind === 'ok' ? outcome.planId : undefined, branch: outcome.kind === 'ok' ? outcome.branch : undefined, triplets: outcome.kind === 'ok' ? outcome.triplets : undefined, issues: outcome.issues, report: outcome.report })
+        } })))
+
+      // ── M4 S3 FT10/FT12/FT13：卡片 prompt 审查门（start：预算门 + 首审） ──────
+      dispose.push(scope.tools.register(defineTool({ name: 'fusion_review_gate', description: 'S3 review gate for task decomposition mode (ON only). Runs AFTER fusion_decompose produced S2 triplets and BEFORE any card creation (S4). First call with no arguments returns the worst-case token budget for reviewing ALL N card prompts; when it exceeds 20k tokens you MUST show that confirmation text to the user and call again with confirmAccepted=true only after explicit user consent. On confirmation it launches the docReview v0.2.1 reviewPrompt service (doc_type=task-prompt) for every card prompt in a serialized queue, returns each chain round-1 report with high/medium/low issues. No card is created while any chain has an unresolved high issue or is degraded. Do not call if decomposition mode is OFF.',
+        parameters: {
+          confirmAccepted: { type: 'boolean', description: 'Set true ONLY after the user explicitly consented to the stated worst-case budget. Without it (or when budget exceeds threshold) no review sub-session is launched.' },
+          workspaceRoot: { type: 'string', description: 'Absolute workspace path for review archives; defaults to session cwd.' },
+        }, output: textOutput,
+        execute: async (args, exec) => {
+          const binding = this.#binding(agent, 'lead')
+          const taskId = binding.taskId
+          const triplets = this.#loadReviewTriplets(taskId)
+          if (triplets.length === 0) {
+            return JSON.stringify({ kind: 'no-triplets', message: 'S2 尚未产出卡片 triplets：先成功调用 fusion_decompose，再进入 S3。' })
+          }
+          const inputs = triplets.map(t => ({ unitIndex: t.unitIndex, title: t.title, prompt: t.prompt, chainId: t.chainId }))
+          const budget = estimateChainBudget(inputs.map(i => i.prompt.length))
+
+          // 幂等：已有审查状态则只回当前批次门状态，不重复派审查。
+          const existing = this.#loadReviewChains(taskId)
+          if (existing.length > 0) {
+            return JSON.stringify({ kind: 'status', budget, ...this.#batchGatePayload(existing) })
+          }
+
+          // FT12 预算确认门：超阈值且未获确认 → 返回确认文本，绝不派审查（§6 D5）。
+          const confirmDoc = this.store.readDocument(this.#reviewConfirmKey(taskId))
+          const confirmed = (confirmDoc?.value as { accepted?: boolean } | undefined)?.accepted === true || args.confirmAccepted === true
+          if (budget.confirmationRequired && !confirmed) {
+            return JSON.stringify({ kind: 'budget-confirmation-required', budget, confirmationText: formatBudgetConfirmation(budget) })
+          }
+          this.store.writeDocument(this.#reviewConfirmKey(taskId), confirmDoc?.revision ?? 0, { schemaVersion: 1, accepted: true, worstCaseTokens: budget.worstCaseTotalTokens, at: new Date().toISOString() })
+
+          // FT13 D2：service 缺失 → 全链标记降级，ON 流水线中止在 S3，不建卡。
+          const service = this.#docReviewService(scope)
+          if (!service) {
+            const chains = inputs.map(i => {
+              const chain = new PromptReviewChain(i.unitIndex, i.title, i.chainId)
+              const [mark] = missingServiceMarks([i])
+              chain.degradation = mark
+              return chain
+            })
+            this.#saveReviewChains(taskId, chains)
+            const marks = chains.map(c => c.degradation).filter((m): m is DegradationMark => Boolean(m))
+            return JSON.stringify({ kind: 'degraded', budget, degraded: marks, notice: formatDegradationNotice(marks) })
+          }
+
+          const outcomes = await runInitialReviews(inputs, {
+            service,
+            parentAgent: agent,
+            signal: exec.signal,
+            timeoutMs: REVIEW_TIMEOUT_MS,
+            workspaceRoot: args.workspaceRoot?.trim() || agent.session.header.cwd || '.',
+          })
+          const chains = outcomes.map(o => o.chain)
+          this.#saveReviewChains(taskId, chains)
+          // FT13：初审出现任一降级（refusal/timeout/busy/…）→ 中止于 S3，返回降级标记与用户提示，绝不放行（§6 D1/D2）。
+          const initialMarks = chains.map(c => c.degradation).filter((m): m is DegradationMark => Boolean(m))
+          if (initialMarks.length > 0) {
+            return JSON.stringify({ kind: 'degraded', budget, notice: formatDegradationNotice(initialMarks), ...this.#batchGatePayload(chains) })
+          }
+          return JSON.stringify({ kind: 'initial-reviews-done', budget, ...this.#batchGatePayload(chains) })
+        } })))
+
+      // ── M4 S3 FT11：Lead 裁决 + 修订 + 仅 high 复审（单链一轮） ──────────────
+      dispose.push(scope.tools.register(defineTool({ name: 'fusion_review_gate_adj', description: 'S3 Lead adjudication and revision for ONE card prompt chain (ON only). Submit the structured adjudication table (every issue of the latest report exactly once: verdict accept|partial|reject with a non-empty reason) together with the revised prompt. A high issue may only be verdict=reject after the user explicitly dismissed it on record (use fusion_review_gate_finalize dismissals). It then triggers the next review round whose payload contains ONLY the previous round unresolved high issues. Hard cap 3 rounds per chain; beyond that the chain is blocked (§6 D4) and no card is created.',
+        parameters: {
+          unitIndex: { type: 'integer', required: true, description: 'CardTriplet.unitIndex of the chain to adjudicate.' },
+          revisedPrompt: { type: 'string', required: true, description: 'The full revised card prompt text after applying accept/partial adjudications.' },
+          adjudication: { type: 'array', required: true, items: { type: 'object', additionalProperties: false, properties: { issueId: { type: 'string', required: true }, verdict: { type: 'string', required: true, enum: ['accept', 'partial', 'reject'] }, reason: { type: 'string', required: true } } }, description: 'One row per issue of the latest report, each exactly once.' },
+          workspaceRoot: { type: 'string', description: 'Absolute workspace path for review archives; defaults to session cwd.' },
+        }, output: textOutput,
+        execute: async (args, exec) => {
+          const binding = this.#binding(agent, 'lead')
+          const taskId = binding.taskId
+          const chains = this.#loadReviewChains(taskId)
+          const chain = chains.find(c => c.unitIndex === args.unitIndex)
+          if (!chain) return JSON.stringify({ kind: 'unknown-chain', unitIndex: args.unitIndex, message: '该卡片尚无初审链：先调用 fusion_review_gate。' })
+          if (chain.degradation) {
+            return JSON.stringify({ kind: 'degraded', unitIndex: args.unitIndex, degradation: chain.degradation, notice: formatDegradationNotice([chain.degradation]) })
+          }
+          const rows: readonly AdjudicationRow[] = args.adjudication.map((r: { issueId: string; verdict: AdjudicationRow['verdict']; reason: string }) => ({ issueId: String(r.issueId), verdict: r.verdict, reason: String(r.reason) }))
+
+          let next: ReturnType<PromptReviewChain['submitAdjudication']>
+          try {
+            next = chain.submitAdjudication(rows, args.revisedPrompt)
+          } catch (error) {
+            return JSON.stringify({ kind: 'invalid-adjudication', unitIndex: args.unitIndex, message: String(error instanceof Error ? error.message : error) })
+          }
+          if (next.scopedIssueIds.length === 0) {
+            // 无残留 high（状态机已 released）：直接回门状态，不浪费复审子会话。
+            this.#saveReviewChains(taskId, chains)
+            return JSON.stringify({ kind: 'revised-no-high', unitIndex: args.unitIndex, ...this.#batchGatePayload(chains) })
+          }
+
+          const service = this.#docReviewService(scope)
+          if (!service) {
+            const [mark] = missingServiceMarks([{ unitIndex: chain.unitIndex, title: chain.title, prompt: '' }])
+            chain.degradation = mark
+            this.#saveReviewChains(taskId, chains)
+            return JSON.stringify({ kind: 'degraded', unitIndex: args.unitIndex, degradation: mark, notice: formatDegradationNotice([mark]) })
+          }
+          const outcome = await runRereview(chain, next, {
+            service,
+            parentAgent: agent,
+            signal: exec.signal,
+            timeoutMs: REVIEW_TIMEOUT_MS,
+            workspaceRoot: args.workspaceRoot?.trim() || agent.session.header.cwd || '.',
+          })
+          this.#saveReviewChains(taskId, chains)
+          if (outcome.kind === 'degraded') {
+            return JSON.stringify({ kind: 'degraded', unitIndex: args.unitIndex, degradation: outcome.mark, notice: formatDegradationNotice([outcome.mark]) })
+          }
+          const lastRound = chain.rounds[chain.rounds.length - 1]
+          return JSON.stringify({
+            kind: 'rereview-done',
+            unitIndex: args.unitIndex,
+            round: lastRound.round,
+            scopedIssueIds: lastRound.scopedIssueIds,
+            remainingHighIssueIds: chain.remainingHighIds(),
+            state: chain.state,
+            ...this.#batchGatePayload(chains),
+          })
+        } })))
+
+      // ── M4 S3 FT11/FT13：用户驳回 high 留痕 + 批次放行终判 ──────────────────
+      dispose.push(scope.tools.register(defineTool({ name: 'fusion_review_gate_finalize', description: 'S3 final gate verdict for the whole decomposition batch (ON only). Optionally record the user explicit accept-reject dismissal of specific high issues (requires the user on-record reason). Returns the batch released flag: true ONLY when every card prompt chain has zero unresolved high issues and no degradation. S4 card creation is permitted only when released=true; this tool never creates cards itself.',
+        parameters: {
+          dismissals: { type: 'array', items: { type: 'object', additionalProperties: false, properties: { unitIndex: { type: 'integer', required: true }, issueId: { type: 'string', required: true }, reason: { type: 'string', required: true } } }, description: 'User explicit accept-reject dismissals of high issues, each with the user on-record reason.' },
+        }, output: textOutput,
+        execute: async (args) => {
+          const binding = this.#binding(agent, 'lead')
+          const taskId = binding.taskId
+          const chains = this.#loadReviewChains(taskId)
+          if (chains.length === 0) return JSON.stringify({ kind: 'no-reviews', message: '尚未进行 S3 审查：先调用 fusion_review_gate。' })
+          const dismissals: readonly { unitIndex: number; issueId: string; reason: string }[] = (args.dismissals ?? [])
+            .map((d: { unitIndex: number; issueId: string; reason: string }) => ({ unitIndex: Number(d.unitIndex), issueId: String(d.issueId), reason: String(d.reason) }))
+          for (const d of dismissals) {
+            const chain = chains.find(c => c.unitIndex === d.unitIndex)
+            if (!chain) return JSON.stringify({ kind: 'unknown-chain', unitIndex: d.unitIndex, message: '该卡片无审查链。' })
+            try {
+              chain.dismissHigh([{ issueId: d.issueId, reason: d.reason }])
+            } catch (error) {
+              return JSON.stringify({ kind: 'invalid-dismissal', unitIndex: d.unitIndex, message: String(error instanceof Error ? error.message : error) })
+            }
+          }
+          this.#saveReviewChains(taskId, chains)
+          const payload = this.#batchGatePayload(chains)
+          if (!payload.released && payload.degraded.length > 0) {
+            return JSON.stringify({ kind: 'blocked-degraded', ...payload, notice: formatDegradationNotice(payload.degraded) })
+          }
+          return JSON.stringify({ kind: payload.released ? 'released' : 'blocked', ...payload })
+        } })))
+      // ── M5 S4 FT14–FT16：建卡规格 / D3 恢复 / 前置回填 / 回读机检（只建不跑）─────
+      // R8：插件 ctx 无看板 service，四个工具只产出客观规格与校验结果；
+      // 真正的看板 create/update 由 Lead 会话照单执行（Q8：流水线绝不执行卡片）。
+      dispose.push(scope.tools.register(defineTool({ name: 'fusion_card_plan', description: 'S4 card-creation planner for task decomposition mode (ON only). Call AFTER fusion_review_gate_finalize returns released=true. Returns the ORDERED board creation specs (index/role/title/description/prompt/tags/parentCreateIndex/serial markers) plus step-by-step instructions: you create every card yourself with the board creation tool, parent first then children, all landing in todo; you MUST NOT execute any card. If a creation call fails with a losslessly JSON-serializable error, call fusion_card_recover instead of blindly retrying.',
+        parameters: { goal: { type: 'string', required: true, description: 'The user goal text, echoed in the delivery document.' } }, output: textOutput,
+        execute: async (args) => {
+          const binding = this.#binding(agent, 'lead')
+          return this.#s4Plan(binding.taskId, String(args.goal ?? ''))
+        } })))
+      dispose.push(scope.tools.register(defineTool({ name: 'fusion_card_recover', description: 'S4 D3 recovery for a board creation call that failed with a tool-result-must-be-losslessly-JSON-serializable error (ON only). Pass the failed spec index, the raw error text, the CURRENT board list rows (id/title) you re-read, and the retry attempt so far. Returns adopt (the card actually landed — never recreate it) or retry (it did not land: perform one no-op update on any existing card to clear the session state, then recreate; at most 2 retries) or stop (report the created ids).',
+        parameters: {
+          index: { type: 'integer', required: true, description: 'CardCreateSpec.index of the failed creation.' },
+          errorText: { type: 'string', required: true, description: 'Raw error text of the failed creation tool call.' },
+          boardList: { type: 'string', required: true, description: 'JSON array of re-read board list rows: [{id,title,status?}].' },
+          retryAttempt: { type: 'integer', description: 'Retries already used for this card (0 default; hard cap 2).' },
+        }, output: textOutput,
+        execute: async (args) => {
+          const binding = this.#binding(agent, 'lead')
+          return this.#s4Recover(binding.taskId, args.index, String(args.errorText ?? ''), args.boardList, args.retryAttempt)
+        } })))
+      dispose.push(scope.tools.register(defineTool({ name: 'fusion_card_backfill', description: 'S4 predecessor backfill planner (ON only). Call AFTER every card was created and you hold all real board ids. Pass adopted as a JSON array of [{index,id,title}] in creation order. Returns, for each serial-chain card k>1, the FULL update payload (final description and prompt text with the placeholder replaced by the real predecessor card id); you apply each with the board update tool, then re-read every card and call fusion_card_verify.',
+        parameters: { adopted: { type: 'string', required: true, description: 'JSON array [{index,id,title}] of all created cards.' } }, output: textOutput,
+        execute: async (args) => {
+          const binding = this.#binding(agent, 'lead')
+          return this.#s4Backfill(binding.taskId, args.adopted)
+        } })))
+      dispose.push(scope.tools.register(defineTool({ name: 'fusion_card_verify', description: 'S4 post-creation machine verification and delivery document (ON only). Pass cards as a JSON array built from re-reading EVERY created card with the board read tool: each row needs id,title,status,parentId,depth,tags[{name}],description,prompt,executionCount. Verifies FT14/FT15/FT16: count, serial numbering, chain/seq tags, description first line, handoff section, predecessor ids backfilled, every card in todo with zero executions, parent/child depth exactly 1, serial roots without parentId. On success returns the ordered delivery document for the user; on failure returns the exact issue list to fix before delivery. This tool never creates or executes cards.',
+        parameters: { cards: { type: 'string', required: true, description: 'JSON array of board read results for every created card.' } }, output: textOutput,
+        execute: async (args) => {
+          const binding = this.#binding(agent, 'lead')
+          return this.#s4Verify(binding.taskId, args.cards)
+        } })))
+    }
     return dispose
   }
 

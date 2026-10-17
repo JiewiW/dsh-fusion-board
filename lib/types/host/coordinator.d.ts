@@ -24,6 +24,8 @@ import { NativeWorkerTransport } from './native-worker.js';
 import { NativeFusionActivity } from './native-activity.js';
 import { CachePolicy } from './cache-policy.js';
 import type { ChangeBase } from './change-evidence.js';
+/** ON 模式（任务分解）下 fusion_delegate 的门控指引：S1→S2 未跑完前禁止直接派活。 */
+export declare const ON_MODE_DELEGATE_GUIDANCE = "Task decomposition mode is ON: direct delegation is gated. First complete S1 \u2014 produce the decomposition JSON and submit it via fusion_decompose; S2 card triplets are generated and TB-C5 machine-checked there. Do not call fusion_delegate until the S2 triplets are delivered (card creation is S4, a later milestone).";
 export interface CoordinatorOptions {
     profile: ResolvedProfile;
     workerTools: readonly string[];

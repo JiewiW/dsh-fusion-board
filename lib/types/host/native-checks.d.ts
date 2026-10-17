@@ -33,6 +33,8 @@ export interface FrozenCheck {
 }
 /** Shell setup failures need a corrected check, rather than an implementation repair. */
 export declare function checkCommandUnavailable(exitCode: number | null, stderr: string, platform?: NodeJS.Platform): boolean;
+/** Command as actually executed. Digests, audit trails and receipts keep the frozen definition unchanged. */
+export declare function commandForExecution(command: string, platform?: NodeJS.Platform): string;
 export declare function freezeChecks(order: WorkOrder, root: string, definitions: readonly CheckDefinition[]): FrozenCheck[];
 /**
  * Counts passed tests from a runner's summary. A suite passes when nothing failed or errored and at
