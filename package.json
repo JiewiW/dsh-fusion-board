@@ -1,12 +1,12 @@
 {
   "name": "dsh-fusion-board",
-  "version": "0.2.7-forkboard.0",
+  "version": "0.2.7-forkboard.1",
   "private": true,
-  "description": "dsh-fusion-board: Apache-2.0 fork of dsh-model-fusion (https://github.com/aa2246740/dsh-model-fusion @ fcb26932). Adds an opt-in task-decomposition mode: Lead decomposes -> S2 card triplets (TB-C5 machine-checked) -> S3 independent prompt review via dsh-doc-review (budget gate) -> S4 board cards, cards only, never executed.",
+  "description": "dsh-fusion-board: Apache-2.0 fork of dsh-model-fusion (https://github.com/aa2246740/dsh-model-fusion @ fcb26932). Adds an opt-in task-decomposition mode: Lead decomposes -> S2 card triplets (TB-C5 machine-checked) -> S3 independent prompt review via dsh-doc-review (budget gate) -> S4 board cards, cards only, never executed. v0.2.7-forkboard.1 fixes write-lease staleness (TTL + heartbeat + auto-clear) and adds Worker activity timeouts.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/aa2246740/dsh-model-fusion.git"
+    "url": "git+https://github.com/JiewiW/dsh-fusion-board.git"
   },
   "keywords": [
     "dsh",

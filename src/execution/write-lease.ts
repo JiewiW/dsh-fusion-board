@@ -6,10 +6,18 @@ import * as path from 'node:path'
 import type { OperationId, SessionId, TaskId, WriteLease } from '../contracts.js'
 import { FusionError, LEASE_BUSY, LEASE_GENERATION } from '../errors.js'
 
+/** Lease TTL: 30 minutes. A lease whose expiresAt has passed is stale. */
+export const LEASE_TTL_MS = 30 * 60 * 1000
+
+/** Heartbeat interval: 20 seconds. Worker calls renew() at this cadence. */
+export const LEASE_HEARTBEAT_MS = 20 * 1000
+
 export interface LeaseRecord extends WriteLease {
   readonly owner: string
   readonly pid: number
   readonly acquiredAt: string
+  /** ISO timestamp; lease expires at this point unless renewed. Absent on legacy records. */
+  readonly expiresAt?: string
   readonly liveProcessRefs: readonly number[]
 }
 
@@ -22,6 +30,21 @@ const DURABLE_LEASE_ROOT = path.join(os.homedir(), '.local', 'state', 'dsh-fusio
 export function leasePath(workspaceId: string, root = DURABLE_LEASE_ROOT): string {
   const key = createHash('sha256').update(workspaceId).digest('hex').slice(0, 24)
   return path.join(root, `${key}.lock`)
+}
+
+/** Check whether a PID is alive. Returns false on ESRCH (PID not found = dead). */
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'ESRCH') return false
+    // EPERM = PID exists but we lack permission to signal it — still alive
+    if (code === 'EPERM') return true
+    // Unknown error: assume alive to avoid false-positive cleanup
+    return true
+  }
 }
 
 export class WorkspaceWriteLease {
@@ -40,14 +63,24 @@ export class WorkspaceWriteLease {
     return this.#transaction(workspaceId, db => {
       const row = this.#row(db)
       const prior = this.#record(row, workspaceId)
-      if (prior) throw new FusionError(LEASE_BUSY, `workspace is held by ${prior.holder}; reconcile before handoff`)
+      if (prior) {
+        // Auto-recover stale lease before throwing LEASE_BUSY
+        if (this.#isStale(prior)) {
+          db.prepare('UPDATE lease SET record=NULL WHERE id=1').run()
+        } else {
+          throw new FusionError(LEASE_BUSY, `workspace is held by ${prior.holder}; reconcile before handoff`)
+        }
+      }
       if (row.generation === Number.MAX_SAFE_INTEGER) throw new FusionError(LEASE_GENERATION, 'lease generation exhausted')
       const refs = [...new Set([process.pid, ...(input.liveProcessRefs ?? [])])]
       if (refs.some(pid => !Number.isSafeInteger(pid) || pid <= 0)) throw new FusionError(LEASE_BUSY, 'invalid process reference')
+      const now = new Date()
       const record: LeaseRecord = {
         workspaceId, holder: input.holder, taskId: input.taskId, generation: row.generation + 1,
         activeOperationIds: [input.operationId], owner: `${process.pid}:${randomUUID()}`, pid: process.pid,
-        acquiredAt: new Date().toISOString(), liveProcessRefs: refs,
+        acquiredAt: now.toISOString(),
+        expiresAt: new Date(now.getTime() + LEASE_TTL_MS).toISOString(),
+        liveProcessRefs: refs,
       }
       db.prepare('UPDATE lease SET generation=?, record=? WHERE id=1').run(record.generation, JSON.stringify(record))
       return record
@@ -77,10 +110,60 @@ export class WorkspaceWriteLease {
     })
   }
 
-  /** Trusted recovery inspection. A dead PID by itself never authorizes stealing. */
+  /**
+   * Renew (heartbeat) the lease — push expiresAt forward by TTL.
+   * Called by Worker every LEASE_HEARTBEAT_MS to prevent premature TTL expiry.
+   * No-op if lease is not owned by caller.
+   */
+  renew(lease: LeaseRecord): LeaseRecord {
+    return this.#transaction(lease.workspaceId, db => {
+      const row = this.#row(db)
+      const current = this.#record(row, lease.workspaceId)
+      if (!current || current.owner !== lease.owner || current.generation !== lease.generation) {
+        throw new FusionError(LEASE_GENERATION, 'cannot renew lease we do not own')
+      }
+      const renewed: LeaseRecord = {
+        ...current,
+        expiresAt: new Date(Date.now() + LEASE_TTL_MS).toISOString(),
+      }
+      db.prepare('UPDATE lease SET record=? WHERE id=1 AND generation=?').run(JSON.stringify(renewed), current.generation)
+      return renewed
+    })
+  }
+
+  /**
+   * Read the current lease, auto-clearing stale ones:
+   *   (a) TTL expired (expiresAt < now), OR
+   *   (b) all liveProcessRefs PIDs are dead.
+   * Legacy records without expiresAt fall back to process-liveness only.
+   * Returns undefined if no lease OR lease was stale and cleared.
+   */
   current(cwd: string): LeaseRecord | undefined {
     const workspaceId = canonicalWorkspace(cwd)
-    return this.#transaction(workspaceId, db => this.#record(this.#row(db), workspaceId))
+    return this.#transaction(workspaceId, db => {
+      const row = this.#row(db)
+      const record = this.#record(row, workspaceId)
+      if (record && this.#isStale(record)) {
+        db.prepare('UPDATE lease SET record=NULL WHERE id=1').run()
+        return undefined
+      }
+      return record
+    })
+  }
+
+  /** Is this lease stale? (TTL expired OR all PIDs dead) */
+  #isStale(record: LeaseRecord): boolean {
+    // (a) TTL check: if expiresAt exists and is past → stale
+    if (record.expiresAt) {
+      const expires = Date.parse(record.expiresAt)
+      if (!Number.isNaN(expires) && expires < Date.now()) return true
+    }
+    // (b) Process-liveness check: if ALL refs are dead → stale
+    if (record.liveProcessRefs.length > 0) {
+      const anyAlive = record.liveProcessRefs.some(pid => isProcessAlive(pid))
+      if (!anyAlive) return true
+    }
+    return false
   }
 
   #row(db: DatabaseSync): { generation: number; record: unknown } {
@@ -100,6 +183,10 @@ export class WorkspaceWriteLease {
       || !Number.isSafeInteger(value.pid) || Number(value.pid) <= 0 || typeof value.acquiredAt !== 'string'
       || !Array.isArray(value.activeOperationIds) || !Array.isArray(value.liveProcessRefs)) {
       throw new FusionError(LEASE_BUSY, 'durable lease requires reconciliation')
+    }
+    // expiresAt is optional — legacy records lack it; #isStale handles both
+    if (value.expiresAt !== undefined && typeof value.expiresAt !== 'string') {
+      throw new FusionError(LEASE_BUSY, 'durable lease expiresAt must be ISO string')
     }
     return value as LeaseRecord
   }

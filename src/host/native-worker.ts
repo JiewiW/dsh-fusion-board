@@ -6,6 +6,13 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-subagent'
 import type { PhysicalRoute } from '../contracts.js'
 
+/** Poll interval for checking whether the child session is still producing events. */
+const WORKER_ACTIVITY_POLL_MS = 20 * 1000
+/** No new session event for this long → Worker is truly hung, interrupt it. */
+const WORKER_IDLE_TIMEOUT_MS = 5 * 60 * 1000
+/** Absolute ceiling even if activity keeps coming; safety net against infinite work. */
+const WORKER_TOTAL_TIMEOUT_MS = 30 * 60 * 1000
+
 export interface NativeWorkerRequest {
   readonly childId: string
   readonly label: string
@@ -105,12 +112,13 @@ export class NativeWorkerTransport {
           removeSteering = parent.ctx.on('agent/inbox/inserted', ({ agent }) => { if (agent === parent) check() })
           check() // A message may already have arrived during delegation setup.
         })
-        const yielded = await Promise.race([child.whenIdle().then(() => false), steering])
+        const settledOrTimeout = this.#settleWithActivityTimeout(child, child.whenIdle())
+        const yielded = await Promise.race([settledOrTimeout.then(() => false), steering])
         // Cancellation still owns full settlement; an already idle Worker can
         // be flushed normally. The Lead alone authors any revised Worker brief.
         if (yielded && !signal.aborted && child.status !== 'idle') return undefined
       }
-      await child.whenIdle()
+      await this.#settleWithActivityTimeout(child, child.whenIdle())
       if (interruptError) throw interruptError
       if (this.ctx.agents.get(child.id) !== child) throw new Error('Worker residency changed; quiescence requires reconciliation')
       if (!await this.ctx.sessions.flush(child.session)) throw new Error('Worker log persistence unavailable')
@@ -119,13 +127,58 @@ export class NativeWorkerTransport {
     } finally { removeSteering(); signal.removeEventListener('abort', interrupt) }
   }
 
+  /**
+   * Wait for child.whenIdle() to settle, but with a two-tier timeout that
+   * distinguishes "still working" from "truly hung":
+   *   - IDLE:  no new session event for WORKER_IDLE_TIMEOUT_MS → hung
+   *   - TOTAL: absolute WORKER_TOTAL_TIMEOUT_MS ceiling (safety net)
+   * We poll the latest session seq every WORKER_ACTIVITY_POLL_MS. A seq
+   * bump resets the idle clock, so a Worker producing tokens/tool calls
+   * (even a 20-minute deep-think) never gets killed. Only a Worker that
+   * stops producing events entirely — crashed, dead-locked, or lost
+   * network — gets interrupted.
+   */
+  async #settleWithActivityTimeout(child: Agent, inner: Promise<void>): Promise<void> {
+    return await new Promise<void>((resolve, reject) => {
+      const startTs = Date.now()
+      let lastProgressSeq = child.session.snapshotEvents().at(-1)?.seq ?? 0
+      let idleSince = startTs
+
+      const interval = setInterval(() => {
+        const now = Date.now()
+        const currentSeq = child.session.snapshotEvents().at(-1)?.seq ?? 0
+        if (currentSeq > lastProgressSeq) {
+          lastProgressSeq = currentSeq
+          idleSince = now
+        }
+        const idleFor = now - idleSince
+        const totalFor = now - startTs
+        if (idleFor >= WORKER_IDLE_TIMEOUT_MS) {
+          clearInterval(interval)
+          reject(new Error(`FUSION_INTERRUPTED: Worker produced no new event for ${Math.round(idleFor / 60000)}m; timed out during fusion_wait`))
+        } else if (totalFor >= WORKER_TOTAL_TIMEOUT_MS) {
+          clearInterval(interval)
+          reject(new Error(`FUSION_INTERRUPTED: Worker exceeded total ${Math.round(totalFor / 60000)}m safety ceiling during fusion_wait`))
+        }
+      }, WORKER_ACTIVITY_POLL_MS)
+
+      inner.then(() => {
+        clearInterval(interval)
+        resolve()
+      }).catch(err => {
+        clearInterval(interval)
+        reject(err)
+      })
+    })
+  }
+
   async stop(parent: Agent, childId: string): Promise<Agent> {
     const child = this.#requireChild(parent, childId)
     // Native continuation teardown may already be closing this idle handle.
     // Reuse only our exact prior quiescence+flush proof at the unchanged log seq.
     if (child.status === 'idle' && this.#flushed.get(child) === (child.session.snapshotEvents().at(-1)?.seq ?? 0)) return child
     this.ctx.subagents.interrupt(child.id, { kind: 'ancestor', agent: parent })
-    await child.whenIdle()
+    await this.#settleWithActivityTimeout(child, child.whenIdle())
     if (this.ctx.agents.get(child.id) !== child) throw new Error('Worker residency changed during stop')
     if (!await this.ctx.sessions.flush(child.session)) throw new Error('Worker log persistence unavailable')
     this.#flushed.set(child, child.session.snapshotEvents().at(-1)?.seq ?? 0)
@@ -148,3 +201,4 @@ export class NativeWorkerTransport {
     return child
   }
 }
+

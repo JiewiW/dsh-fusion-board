@@ -170,6 +170,51 @@ export function FusionSettings() {
         <p>{tr(lang, '开启后 Lead 不再向 Sidekick 委派任务，fusion_delegate 直接返回「任务分解模式建设中」：不派活、不建卡、不触发审查。此为 M2 占位桩；关闭（默认）时，委派流程与上游版本完全一致。',
           'When on, the Lead no longer delegates to a Sidekick; fusion_delegate returns “Task decomposition mode is under construction”: no dispatch, no task card, no review. This is an M2 placeholder; when off (default), delegation is identical to the upstream release.')}</p>
       </fieldset>
+      <details className="fusion-card">
+        <summary>{tr(lang, '使用说明（点我展开）', 'How to use (click to expand)')}</summary>
+        <div className="fusion-limits">
+          <p><b>{tr(lang, '第一次用？三步搞定', 'First time? Three steps')}</b></p>
+          <ol>
+            <li>{tr(lang, '在上方选好 Lead 和 Sidekick 模型，点"保存组合"', 'Pick a Lead and a Sidekick above, then click "Save pair"')}</li>
+            <li>{tr(lang, '打开模型菜单，选"Fusion Board · 自动"', 'Open the model menu and pick "Fusion Board · auto"')}</li>
+            <li>{tr(lang, '正常聊天就行。Lead 会自己判断哪些活值得甩给 Sidekick', 'Chat normally. The Lead decides what to delegate to the Sidekick')}</li>
+          </ol>
+
+          <p><b>{tr(lang, '我想手动指定 Sidekick 干什么', 'I want to tell the Sidekick what to do')}</b></p>
+          <p>{tr(lang, '在消息开头写 /fusion delegate 加你的要求，比如：', 'Start your message with /fusion delegate plus your request, for example:')}</p>
+          <ul>
+            <li><code>/fusion delegate 重构 src/auth.ts，顺便补点单元测试</code></li>
+            <li><code>/fusion delegate --mode explore 调研一下项目用了哪些 ORM，不要改代码</code> — {tr(lang, '加 --mode explore 就是"只读调研，别碰文件"', '--mode explore means "read-only research, don\'t touch files"')}</li>
+            <li><code>/fusion delegate --mode text 写一份 API 设计文档到 docs/</code> — {tr(lang, '加 --mode text 就是"只写文件，不许跑命令"', '--mode text means "edit files only, no shell commands"')}</li>
+          </ul>
+
+          <p><b>{tr(lang, '为什么别的会话突然写不了文件了？', 'Why can\'t my other session write files?')}</b></p>
+          <p>{tr(lang, 'Sidekick 在干活的时候会临时"锁"住当前工作区，防止两个 Worker 同时改同一批文件改乱了。正常情况干完就自动解锁，一般不会有感觉。',
+            'When the Sidekick is working it briefly "locks" the current workspace so two Workers don\'t edit the same files at the same time. It auto-unlocks when done; normally you won\'t notice.')}</p>
+          <p>{tr(lang, '嫌锁碍事？手动委派时加 --mode explore 或 --mode text 就不拿锁了（见上一条）。',
+            'If the lock is annoying: add --mode explore or --mode text to a manual delegation (see above).')}</p>
+
+          <p><b>{tr(lang, '电脑重启后再打开，发消息全卡住了怎么办？', 'After a reboot my messages get stuck queued — what do I do?')}</b></p>
+          <p>{tr(lang, '正常现象。Worker 跟着电脑一起死了，Fusion 还在等它回来。按顺序敲这两行命令：',
+            'Normal — the Worker died with the reboot and Fusion is still waiting for it. Run these two commands in order:')}</p>
+          <ol>
+            <li><code>/fusion recover --effects-stopped 重启前中断了 Worker，所有进程已终止</code></li>
+            <li><code>/fusion resume</code></li>
+          </ol>
+          <p>{tr(lang, '然后发一条新消息就好了。recover 那行至少要写 12 个字，随便写点什么检查结论就行，不会自动回放任何动作。',
+            'Then send a new message. The recover line needs at least 12 characters — write whatever you inspected; nothing gets auto-replayed.')}</p>
+
+          <p><b>{tr(lang, 'Sidekick 一直转圈圈不回来，等多久算真卡了？', 'Sidekick is spinning — how long before I worry?')}</b></p>
+          <p>{tr(lang, '现在不会再永久卡死了。Sidekick 5 分钟没动静就会自动停下来报超时，最多等 30 分钟也一定有结果。超时后按上面的恢复流程走就行。',
+            'It won\'t hang forever anymore. 5 minutes with no progress → auto-timeout; worst case 30 minutes. After timeout use the recovery sequence above.')}</p>
+
+          <p><b>{tr(lang, '设置面板底部那两块是什么？', 'What are the two sections at the bottom of this page?')}</b></p>
+          <ul>
+            <li><b>{tr(lang, '历史委派', 'History')}</b> — {tr(lang, 'Sidekick 干过的活的摘要，点开能看完整对话', 'A summary of what the Sidekick did; click to see the full conversation')}</li>
+            <li><b>{tr(lang, '模型缓存', 'Model cache')}</b> — {tr(lang, 'Fusion 记着每个模型的上下文长度和支持的工具，省得每次都查。可以手动刷新', 'Fusion remembers each model\'s context length and tool support so it doesn\'t re-query. Can be refreshed manually')}</li>
+          </ul>
+        </div>
+      </details>
       <p>{tr(lang, '输出参数跟随原生模型设置，Fusion 不额外限制请求次数或任务轮数。', 'Output settings follow the native model settings; Fusion adds no request or round limits.')}</p>
       <p>{tr(lang, '保存即表示允许 Fusion 使用所选模型的现有账号；费用由这些账号计入，当前未提供可靠的实际账单金额。', 'Saving lets Fusion use the chosen models\' existing accounts; they are billed there, and no reliable billed amount is available here.')}</p>
       {state.pair && !state.authorized && <p role="status">{tr(lang, '组合需要重新保存后才能使用', 'Save the pair again before use')}{state.reason ? `: ${state.reason}` : ''}</p>}

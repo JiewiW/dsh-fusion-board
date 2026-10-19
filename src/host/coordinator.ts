@@ -1621,6 +1621,10 @@ export class FusionCoordinator {
     await agent.runMaintenance(async () => {
       const state = this.state(binding.taskId)
       if (this.#trackingErrors.has(binding.taskId) || state.control.recovering || state.control.outcomeUnknown) throw new Error('Review the interrupted effects and use /fusion recover <inspection note>')
+      // —— 硬伤 3c 修复: stale-state 体检 ——
+      // 重启后 persisted state 里可能残留指向旧 session 的 acceptedChild/lease。
+      // 体检失败 → 让用户显式 reconcile，而不是盲续跑到 transport.settle 无限等。
+      this.#assertResumeHealthy(binding, state)
       // Official module HMR can initialize the next generation while the old
       // one is still draining its Agent-owned tools. Retry that failed partial
       // scope only under explicit, quiescent resume, and retain the pause if
@@ -1635,6 +1639,41 @@ export class FusionCoordinator {
       if (this.state(binding.taskId).control.mode === 'paused') this.append(binding.taskId, 'task/resumed', { reason: 'User resumed the native Fusion task' })
       this.#clearWorkerFailure(binding.taskId)
     })
+  }
+
+  /**
+   * Hard fault 3c — stale-state pre-flight.
+   * 重启后 persisted state 里的 acceptedChild 可能指向旧 session，
+   * lease 可能已过期，effects 可能还挂着。体检失败直接阻断 resume，
+   * 让用户显式 reconcile，而不是盲续跑到 transport.settle 无限等。
+   */
+  #assertResumeHealthy(binding: SessionBinding, state: ReturnType<FusionCoordinator['state']>): void {
+    // 体检 1: 活跃 worker 引用是否存活
+    if (state.acceptedChild) {
+      const child = this.ctx.agents.get(NativeSessionId(state.acceptedChild))
+      if (!child) {
+        throw new Error(`Persisted acceptedChild ${state.acceptedChild} is no longer in ctx.agents; the Worker died during restart. Use /fusion recover to reconcile, then start a fresh delegation.`)
+      }
+    }
+    // 体检 2: 写租约是否已过期（leaseRoot 的 current() 会自动清 stale）
+    if (state.lease?.holder) {
+      const runtime = this.#runtime(binding.taskId)
+      if (runtime.root) {
+        const current = this.leases.current(runtime.root)
+        // current() 返回 undefined 意味着 lease 不存在 或 TTL 已过期 或进程全死
+        if (!current) {
+          throw new Error('Workspace write lease has expired or was cleared since the last Host start; the prior Worker is dead. Use /fusion recover to reconcile before resuming.')
+        }
+        if (current.holder !== state.lease.holder || current.generation !== state.lease.generation) {
+          throw new Error(`Workspace lease generation mismatch (persisted ${state.lease.generation}, current ${current.generation}); another session may have claimed the lease. Use /fusion recover to reconcile.`)
+        }
+      }
+    }
+    // 体检 3: pending effects 必须由 recover 显式处理，不能在 resume 时静默带过
+    const pending = this.effects.pending(binding.taskId)
+    if (pending.length > 0) {
+      throw new Error(`Found ${pending.length} unfinished native effects after resume; this task needs /fusion recover inspection before any worker handoff.`)
+    }
   }
 
   /** Human command only. Never exposed as an LLM tool or triggered by a dead PID alone. */
