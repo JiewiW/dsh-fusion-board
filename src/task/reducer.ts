@@ -145,6 +145,12 @@ function applyPayload(state: TaskState | undefined, event: FusionEvent): TaskSta
       }
     case 'child/claimed':
       return { ...need(state, event), phase: 'WORKER_RUNNING' }
+    case 'child/reconciled': {
+      const next = need(state, event)
+      const acceptedChild = event.payload.acceptedChildCleared && next.acceptedChild === event.payload.acceptedChildCleared ? undefined : next.acceptedChild
+      const reservedChild = event.payload.reservedChildCleared && next.reservedChild === event.payload.reservedChildCleared ? undefined : next.reservedChild
+      return { ...next, acceptedChild, reservedChild, acceptedMessageId: acceptedChild ? next.acceptedMessageId : undefined }
+    }
     case 'exploration/recorded': {
       const next = need(state, event), report = event.payload.report, order = next.currentWorkOrder
       assertControlAllowsExecution(next)

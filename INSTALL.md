@@ -9,7 +9,7 @@ Requires **DeepSeek Harness 0.2.0-rc.2**. Other versions are not supported.
 Click **Plugins** in the left sidebar → **Add plugin**, and enter in "Package name or address":
 
 ```text
-github:JiewiW/dsh-fusion-board#v0.2.7-forkboard.1
+github:JiewiW/dsh-fusion-board#v0.2.7-forkboard.2
 ```
 
 The release includes the built `lib/`; no clone or build is needed. Then quit and reopen DSH Studio (plugins take effect at the next start).
@@ -17,10 +17,10 @@ The release includes the built `lib/`; no clone or build is needed. Then quit an
 ## Web CLI
 
 ```sh
-dsh plugin --profile web add github:JiewiW/dsh-fusion-board#v0.2.7-forkboard.1
+dsh plugin --profile web add github:JiewiW/dsh-fusion-board#v0.2.7-forkboard.2
 ```
 
-If `dsh` is not on PATH: `npx @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile web add github:JiewiW/dsh-fusion-board#v0.2.7-forkboard.1`.
+If `dsh` is not on PATH: `npx @deepseek-ai/dsh@0.2.0-rc.2 plugin --profile web add github:JiewiW/dsh-fusion-board#v0.2.7-forkboard.2`.
 This writes only the `web` profile. Reopen a running Web Host once and reload the page.
 
 ## After installing

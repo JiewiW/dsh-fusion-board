@@ -383,6 +383,10 @@ export type FusionEvent = EventEnvelope<'task/created', {
 }> | EventEnvelope<'child/claimed', {
     operationId: OperationId;
     child: SessionId;
+}> | EventEnvelope<'child/reconciled', {
+    acceptedChildCleared?: SessionId;
+    reservedChildCleared?: SessionId;
+    reason: 'worker-dead' | 'manual-clear';
 }> | EventEnvelope<'exploration/recorded', {
     report: ExplorationReport;
 }> | EventEnvelope<'report/submitted', {

@@ -1698,6 +1698,18 @@ export class FusionCoordinator {
       const child = (state.acceptedChild ?? state.reservedChild) && this.ctx.agents.get(NativeSessionId((state.acceptedChild ?? state.reservedChild)!))
       await this.#stopJobs(binding.taskId)
       if (child) await this.transport.release(agent, child.id)
+      // ── 治本: 清除已死 worker 的 persisted 引用 ──
+      // 根因: worker 被宿主/用户中断后 session/end-seed, ctx.agents 不再持有它。
+      // reconcile 之前只做租约释放+状态标记, 不清 acceptedChild/reservedChild,
+      // 导致后续 resume 撞 #assertResumeHealthy 体检1: "Persisted acceptedChild X is no longer in ctx.agents".
+      // 现在: reconcile 检测到 persisted 引用在 ctx.agents 里找不到 → 发 child/reconciled 事件清除.
+      const deadAccepted = state.acceptedChild && !this.ctx.agents.get(NativeSessionId(state.acceptedChild)) ? state.acceptedChild : undefined
+      const deadReserved = state.reservedChild && !this.ctx.agents.get(NativeSessionId(state.reservedChild)) ? state.reservedChild : undefined
+      if (deadAccepted || deadReserved) {
+        this.append(binding.taskId, 'child/reconciled', {
+          acceptedChildCleared: deadAccepted, reservedChildCleared: deadReserved, reason: 'worker-dead'
+        })
+      }
       const lease = textOnly ? undefined : this.leases.current(root!)
       if (lease && lease.taskId !== binding.taskId) throw new Error('Another task owns the workspace lease')
       if (lease && lease.pid !== process.pid) {

@@ -402,6 +402,7 @@ export type FusionEvent =
   | EventEnvelope<'work-order/scope-expanded', { workOrderId: WorkOrderId; allowedPaths: readonly string[]; added: readonly string[]; reason: string }>
   | EventEnvelope<'child/accepted', { operationId: OperationId; child: SessionId; messageId: string }>
   | EventEnvelope<'child/claimed', { operationId: OperationId; child: SessionId }>
+  | EventEnvelope<'child/reconciled', { acceptedChildCleared?: SessionId; reservedChildCleared?: SessionId; reason: 'worker-dead' | 'manual-clear' }>
   | EventEnvelope<'exploration/recorded', { report: ExplorationReport }>
   | EventEnvelope<'report/submitted', { operationId: OperationId; report: WorkerReport }>
   | EventEnvelope<'report/validated', { operationId: OperationId; report: WorkerReport }>
